@@ -1,0 +1,1308 @@
+const originalEmitWarning = process.emitWarning.bind(process);
+process.emitWarning = (warning, ...args) => {
+  const optionLike = args.find((item) => item && typeof item === "object");
+  const codeFromOptions = optionLike && typeof optionLike.code === "string" ? optionLike.code : "";
+  const codeFromArgs =
+    typeof args[1] === "string" ? args[1] : typeof args[0] === "string" && args[0].startsWith("DEP") ? args[0] : "";
+  const code = codeFromOptions || codeFromArgs || (warning && typeof warning === "object" ? warning.code : "");
+
+  if (code === "DEP0180") {
+    return;
+  }
+
+  return originalEmitWarning(warning, ...args);
+};
+
+const { app, BrowserWindow, dialog, ipcMain } = require("electron");
+const fs = require("node:fs/promises");
+const fssync = require("node:fs");
+const path = require("node:path");
+const os = require("node:os");
+const { spawn } = require("node:child_process");
+
+const SETTINGS_FILE_NAME = "builder-settings.json";
+const LOCAL_CACHE_ROOT = path.join(__dirname, ".cache");
+const DEFAULT_PROJECT_ICON = path.join(
+  __dirname,
+  "src",
+  "assets",
+  "images",
+  "icon.png"
+);
+const CACHE_PATHS = {
+  appUserData: path.join(LOCAL_CACHE_ROOT, "electron", "user-data"),
+  appCache: path.join(LOCAL_CACHE_ROOT, "electron", "cache"),
+  appTemp: path.join(LOCAL_CACHE_ROOT, "electron", "temp"),
+  appLogs: path.join(LOCAL_CACHE_ROOT, "electron", "logs"),
+  builderTemp: path.join(LOCAL_CACHE_ROOT, "builder", "temp"),
+  builderCache: path.join(LOCAL_CACHE_ROOT, "builder", "cache"),
+  electronDownloadCache: path.join(LOCAL_CACHE_ROOT, "builder", "electron-download"),
+  npmCache: path.join(LOCAL_CACHE_ROOT, "builder", "npm-cache"),
+};
+
+function ensureLocalCacheDirs() {
+  Object.values(CACHE_PATHS).forEach((dir) => {
+    fssync.mkdirSync(dir, { recursive: true });
+  });
+}
+
+function configureLocalAppPaths() {
+  ensureLocalCacheDirs();
+  app.setPath("userData", CACHE_PATHS.appUserData);
+  app.setPath("cache", CACHE_PATHS.appCache);
+  app.setPath("temp", CACHE_PATHS.appTemp);
+  app.setPath("logs", CACHE_PATHS.appLogs);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function rmWithRetry(targetPath, options = {}, retries = 8) {
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      await fs.rm(targetPath, options);
+      return;
+    } catch (error) {
+      const code = error && error.code;
+      const shouldRetry =
+        attempt < retries && (code === "EBUSY" || code === "ENOTEMPTY" || code === "EPERM");
+      if (!shouldRetry) {
+        throw error;
+      }
+      await sleep(180 * (attempt + 1));
+    }
+  }
+}
+
+function isLockRelatedError(error) {
+  const code = error && error.code;
+  return code === "EBUSY" || code === "EPERM" || code === "ENOTEMPTY";
+}
+
+function toPosixPath(inputPath) {
+  return String(inputPath || "").replace(/\\/g, "/");
+}
+
+function collectUnlockCandidates(targetPath, errorMessage = "") {
+  const candidates = new Set();
+  const normalizedTarget = path.resolve(targetPath);
+  candidates.add(normalizedTarget);
+  candidates.add(path.dirname(normalizedTarget));
+
+  const message = String(errorMessage || "");
+  const pathMatch = message.match(/'([^']+)'/);
+  if (pathMatch && pathMatch[1]) {
+    const lockedPath = path.resolve(pathMatch[1]);
+    candidates.add(lockedPath);
+    candidates.add(path.dirname(lockedPath));
+
+    const marker = `${path.sep}win-unpacked${path.sep}`;
+    const markerIndex = lockedPath.toLowerCase().indexOf(marker.toLowerCase());
+    if (markerIndex >= 0) {
+      candidates.add(lockedPath.slice(0, markerIndex + marker.length - 1));
+    }
+  }
+
+  return Array.from(candidates)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => toPosixPath(item).toLowerCase());
+}
+
+async function runPowerShellJson(script, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const ps = spawn(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+      {
+        windowsHide: true,
+      }
+    );
+
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      ps.kill();
+      reject(new Error("PowerShell unlock command timeout"));
+    }, timeoutMs);
+
+    ps.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    ps.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    ps.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+
+    ps.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `PowerShell exited with code ${code}`));
+        return;
+      }
+
+      const trimmed = stdout.trim();
+      if (!trimmed) {
+        resolve({});
+        return;
+      }
+
+      try {
+        resolve(JSON.parse(trimmed));
+      } catch (error) {
+        reject(new Error(`Invalid PowerShell JSON output: ${trimmed}`));
+      }
+    });
+  });
+}
+
+async function tryReleaseWindowsLocks(candidatePaths) {
+  if (process.platform !== "win32") {
+    return { attempted: false, killed: 0, processes: [] };
+  }
+
+  const targets = Array.from(new Set((candidatePaths || []).map((item) => String(item || "").trim().toLowerCase()).filter(Boolean)));
+  if (targets.length === 0) {
+    return { attempted: false, killed: 0, processes: [] };
+  }
+
+  const targetsLiteral = JSON.stringify(targets);
+  const script = `$ErrorActionPreference = 'SilentlyContinue'\n$targets = ${targetsLiteral} | ForEach-Object { $_.ToString().ToLowerInvariant() }\n$rows = New-Object System.Collections.Generic.List[object]\nGet-CimInstance Win32_Process | ForEach-Object {\n  $pid = $_.ProcessId\n  if ($pid -eq $PID) { return }\n  $exe = if ($_.ExecutablePath) { $_.ExecutablePath.ToLowerInvariant().Replace('\\','/') } else { '' }\n  $cmd = if ($_.CommandLine) { $_.CommandLine.ToLowerInvariant().Replace('\\','/') } else { '' }\n  $matched = $false\n  foreach ($t in $targets) {\n    if (($exe -and $exe.StartsWith($t)) -or ($cmd -and $cmd.Contains($t))) {\n      $matched = $true\n      break\n    }\n  }\n  if ($matched) {\n    try {\n      Stop-Process -Id $pid -Force -ErrorAction Stop\n      $rows.Add([PSCustomObject]@{ pid = $pid; name = $_.Name }) | Out-Null\n    } catch {}\n  }\n}\n[PSCustomObject]@{ attempted = $true; killed = $rows.Count; processes = $rows } | ConvertTo-Json -Compress`;
+
+  try {
+    const result = await runPowerShellJson(script, 10000);
+    const processes = Array.isArray(result.processes) ? result.processes : [];
+    return {
+      attempted: true,
+      killed: Number(result.killed || 0),
+      processes,
+    };
+  } catch (error) {
+    return {
+      attempted: true,
+      killed: 0,
+      processes: [],
+      error: error.message,
+    };
+  }
+}
+
+async function tryUnlockAndRemove(targetPath, options = {}, errorForCandidates = null) {
+  const candidates = collectUnlockCandidates(
+    targetPath,
+    errorForCandidates && errorForCandidates.message
+  );
+  const release = await tryReleaseWindowsLocks(candidates);
+
+  if (release.killed > 0) {
+    await sleep(300);
+  }
+
+  try {
+    await rmWithRetry(targetPath, options, 5);
+    return {
+      removed: true,
+      release,
+    };
+  } catch (error) {
+    return {
+      removed: false,
+      release,
+      error,
+    };
+  }
+}
+
+async function cleanupLegacyTempArtifacts() {
+  const tempRoot = os.tmpdir();
+  let names = [];
+  try {
+    names = await fs.readdir(tempRoot);
+  } catch (error) {
+    return;
+  }
+
+  const targets = names.filter(
+    (name) =>
+      name.startsWith("electron-html-pack-") ||
+      name.startsWith("electron-builder-ui-")
+  );
+
+  const skipped = [];
+  let autoRecovered = 0;
+  let killedProcesses = 0;
+  const unlockedBy = [];
+  await Promise.all(
+    targets.map(async (name) => {
+      const fullPath = path.join(tempRoot, name);
+      try {
+        await rmWithRetry(fullPath, { recursive: true, force: true });
+      } catch (error) {
+        if (isLockRelatedError(error)) {
+          const unlockResult = await tryUnlockAndRemove(
+            fullPath,
+            { recursive: true, force: true },
+            error
+          );
+          killedProcesses += unlockResult.release.killed || 0;
+          if (Array.isArray(unlockResult.release.processes)) {
+            unlockedBy.push(...unlockResult.release.processes);
+          }
+
+          if (unlockResult.removed) {
+            autoRecovered += 1;
+            return;
+          }
+
+          const finalError = unlockResult.error || error;
+          skipped.push({
+            path: fullPath,
+            code: finalError.code || "EBUSY",
+            message: finalError.message,
+          });
+          return;
+        }
+        throw error;
+      }
+    })
+  );
+
+  return {
+    skipped,
+    autoRecovered,
+    killedProcesses,
+    unlockedBy,
+  };
+}
+
+async function clearLocalCaches() {
+  const targets = [
+    CACHE_PATHS.appCache,
+    CACHE_PATHS.appTemp,
+    CACHE_PATHS.appLogs,
+    CACHE_PATHS.builderTemp,
+    CACHE_PATHS.builderCache,
+    CACHE_PATHS.electronDownloadCache,
+    CACHE_PATHS.npmCache,
+  ];
+
+  let removed = 0;
+  const skipped = [];
+  let autoRecovered = 0;
+  let killedProcesses = 0;
+  const unlockedBy = [];
+  for (const target of targets) {
+    try {
+      await rmWithRetry(target, { recursive: true, force: true });
+      removed += 1;
+    } catch (error) {
+      if (isLockRelatedError(error)) {
+        const unlockResult = await tryUnlockAndRemove(
+          target,
+          { recursive: true, force: true },
+          error
+        );
+        killedProcesses += unlockResult.release.killed || 0;
+        if (Array.isArray(unlockResult.release.processes)) {
+          unlockedBy.push(...unlockResult.release.processes);
+        }
+
+        if (unlockResult.removed) {
+          removed += 1;
+          autoRecovered += 1;
+          continue;
+        }
+
+        const finalError = unlockResult.error || error;
+        skipped.push({
+          path: target,
+          code: finalError.code || "EBUSY",
+          message: finalError.message,
+        });
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  ensureLocalCacheDirs();
+  const legacyResult = await cleanupLegacyTempArtifacts();
+  autoRecovered += legacyResult.autoRecovered || 0;
+  killedProcesses += legacyResult.killedProcesses || 0;
+  if (Array.isArray(legacyResult.unlockedBy)) {
+    unlockedBy.push(...legacyResult.unlockedBy);
+  }
+
+  const uniqueUnlockedBy = Array.from(
+    new Map(
+      unlockedBy.map((item) => [
+        `${item.name || "process"}#${item.pid || "0"}`,
+        item,
+      ])
+    ).values()
+  );
+
+  return {
+    cacheRoot: LOCAL_CACHE_ROOT,
+    removed,
+    skipped: [...skipped, ...(legacyResult.skipped || [])],
+    autoRecovered,
+    killedProcesses,
+    unlockedBy: uniqueUnlockedBy,
+  };
+}
+
+configureLocalAppPaths();
+
+let mainWindow;
+let activeBuild = null;
+
+const STEP_KEYS = {
+  PREPARE: "prepare",
+  TEMP_PROJECT: "temp-project",
+  INSTALL: "install",
+  PACKAGE: "package",
+  ARTIFACT: "artifact",
+  COMPLETE: "complete",
+};
+
+function noop() {}
+
+function updateStep(onStatus, step, state, text) {
+  onStatus({ type: "step", step, state, text: text || "" });
+}
+
+function updateOverall(onStatus, state, text) {
+  onStatus({ type: "overall", state, text: text || "" });
+}
+
+function handleBuilderChunk(line, stepMarks, onStatus) {
+  const lower = String(line || "").toLowerCase();
+
+  if (lower.includes("installing dependencies") && !stepMarks.installStarted) {
+    stepMarks.installStarted = true;
+    updateStep(onStatus, STEP_KEYS.INSTALL, "running", "安装依赖中");
+  }
+  if (
+    (lower.includes("completed installing native dependencies") ||
+      lower.includes("installing native dependencies")) &&
+    !stepMarks.installCompleted
+  ) {
+    stepMarks.installCompleted = true;
+    updateStep(onStatus, STEP_KEYS.INSTALL, "done", "依赖安装完成");
+  }
+
+  if (lower.includes("packaging") && !stepMarks.packageStarted) {
+    stepMarks.packageStarted = true;
+    updateStep(onStatus, STEP_KEYS.PACKAGE, "running", "应用封装中");
+  }
+
+  if (
+    (lower.includes("building") || lower.includes("artifact") || lower.includes("nsis")) &&
+    !stepMarks.artifactStarted
+  ) {
+    stepMarks.artifactStarted = true;
+    updateStep(onStatus, STEP_KEYS.ARTIFACT, "running", "生成安装包中");
+  }
+}
+
+function sanitizeName(name) {
+  return String(name || "html-app")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "") || "html-app";
+}
+
+async function findFirstHtmlFile(rootDir) {
+  const queue = [""];
+  while (queue.length > 0) {
+    const relativeDir = queue.shift();
+    const absDir = path.join(rootDir, relativeDir);
+    const entries = await fs.readdir(absDir, { withFileTypes: true });
+
+    const indexFile = entries.find(
+      (entry) => entry.isFile() && entry.name.toLowerCase() === "index.html"
+    );
+    if (indexFile) {
+      return path.join(relativeDir, indexFile.name);
+    }
+
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (["node_modules", ".git", "release", "dist"].includes(entry.name)) {
+          continue;
+        }
+        queue.push(path.join(relativeDir, entry.name));
+      }
+    }
+
+    const anyHtml = entries.find(
+      (entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".html")
+    );
+    if (anyHtml) {
+      return path.join(relativeDir, anyHtml.name);
+    }
+  }
+
+  return "";
+}
+
+function getSettingsPath() {
+  return path.join(app.getPath("userData"), SETTINGS_FILE_NAME);
+}
+
+function getDefaultFormSettings() {
+  return {
+    winIcon: DEFAULT_PROJECT_ICON,
+    linuxIcon: DEFAULT_PROJECT_ICON,
+    macIcon: DEFAULT_PROJECT_ICON,
+  };
+}
+
+async function readSettings() {
+  const settingsPath = getSettingsPath();
+  try {
+    const content = await fs.readFile(settingsPath, "utf-8");
+    return JSON.parse(content);
+  } catch (error) {
+    return {};
+  }
+}
+
+async function writeSettings(settings) {
+  const settingsPath = getSettingsPath();
+  await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
+}
+
+function createWindow() {
+  const hasDefaultIcon = fssync.existsSync(DEFAULT_PROJECT_ICON);
+  mainWindow = new BrowserWindow({
+    width: 1280,
+    height: 840,
+    minWidth: 1080,
+    minHeight: 680,
+    autoHideMenuBar: true,
+    icon: hasDefaultIcon ? DEFAULT_PROJECT_ICON : undefined,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  mainWindow.loadFile(path.join(__dirname, "src", "index.html"));
+}
+
+function parseCommaList(raw) {
+  if (!raw || !raw.trim()) {
+    return [];
+  }
+  return raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function parseLines(raw) {
+  if (!raw || !raw.trim()) {
+    return [];
+  }
+  return raw
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function parseArchFlags(raw) {
+  const allowed = new Set(["x64", "arm64", "ia32", "armv7l", "universal"]);
+  return parseCommaList(raw).filter((item) => allowed.has(item));
+}
+
+function uniqueLines(lines) {
+  return Array.from(new Set(lines.filter(Boolean)));
+}
+
+function normalizeHtmlOnlyFilesGlobs(raw) {
+  const required = ["main.js", "package.json", "app-source/**", "!release/**"];
+  const userLines = parseLines(raw).filter((line) => !line.startsWith("!"));
+
+  if (userLines.length === 0) {
+    return required.join("\n");
+  }
+
+  // Keep user positive rules but always include essential runtime files.
+  return uniqueLines([...userLines, ...required]).join("\n");
+}
+
+function resolveLocalElectronVersion() {
+  const electronPkgPath = path.join(
+    __dirname,
+    "node_modules",
+    "electron",
+    "package.json"
+  );
+
+  try {
+    const content = fssync.readFileSync(electronPkgPath, "utf-8");
+    const pkg = JSON.parse(content);
+    if (pkg && typeof pkg.version === "string" && pkg.version.trim()) {
+      return pkg.version.trim();
+    }
+  } catch (error) {
+    // Ignore and fallback to fixed default.
+  }
+
+  return "41.2.0";
+}
+
+function parsePositiveInt(raw, fallback) {
+  const value = Number.parseInt(String(raw || ""), 10);
+  if (Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  return fallback;
+}
+
+function getGeneratedWindowOptions(form) {
+  const width = parsePositiveInt(form.windowWidth, 1280);
+  const height = parsePositiveInt(form.windowHeight, 800);
+  const showMenuBar = form.windowShowMenuBar !== false;
+
+  return {
+    title: form.windowTitle || form.productName || "HTML App",
+    width,
+    height,
+    frame: form.windowFrame !== false,
+    resizable: form.windowResizable !== false,
+    fullscreenable: form.windowFullscreenable !== false,
+    alwaysOnTop: Boolean(form.windowAlwaysOnTop),
+    autoHideMenuBar: !showMenuBar,
+    showMenuBar,
+  };
+}
+
+function hasWindowUiOverride(form) {
+  return (
+    Boolean(form.windowTitle) ||
+    Boolean(form.windowWidth) ||
+    Boolean(form.windowHeight) ||
+    form.windowShowMenuBar === false ||
+    form.windowFrame === false ||
+    form.windowResizable === false ||
+    form.windowFullscreenable === false ||
+    Boolean(form.windowAlwaysOnTop)
+  );
+}
+
+async function readProjectManifest(projectDir) {
+  const pkgPath = path.join(projectDir, "package.json");
+  const content = await fs.readFile(pkgPath, "utf-8");
+  return JSON.parse(content);
+}
+
+function toAuthorText(author) {
+  if (!author) {
+    return "";
+  }
+  if (typeof author === "string") {
+    return author;
+  }
+  if (typeof author === "object") {
+    return author.name || "";
+  }
+  return "";
+}
+
+function parseBuildTargetNames(rawTarget) {
+  if (!rawTarget) {
+    return [];
+  }
+
+  if (typeof rawTarget === "string") {
+    return [rawTarget];
+  }
+
+  if (!Array.isArray(rawTarget)) {
+    return [];
+  }
+
+  return rawTarget
+    .map((item) => {
+      if (typeof item === "string") {
+        return item;
+      }
+      if (item && typeof item === "object" && typeof item.target === "string") {
+        return item.target;
+      }
+      return "";
+    })
+    .filter(Boolean);
+}
+
+async function inspectProjectDefaults(projectDirInput) {
+  if (!projectDirInput || !projectDirInput.trim()) {
+    throw new Error("请先选择项目目录。");
+  }
+
+  const projectDir = path.resolve(projectDirInput);
+  const pkgPath = path.join(projectDir, "package.json");
+  const hasPkg = fssync.existsSync(pkgPath);
+
+  if (!hasPkg) {
+    const htmlEntry = await findFirstHtmlFile(projectDir);
+    if (!htmlEntry) {
+      throw new Error("目录中没有 package.json，也没有 html 文件。");
+    }
+
+    return {
+      defaults: {
+        appId: "",
+        productName: path.basename(projectDir),
+        executableName: sanitizeName(path.basename(projectDir)),
+        artifactName: "",
+        version: "1.0.0",
+        author: "",
+        description: "",
+        outputDir: "release",
+        filesGlobs: "**/*\n!release/**",
+        extraResources: "",
+        asarUnpack: "",
+        windowTitle: path.basename(projectDir),
+        windowWidth: "1280",
+        windowHeight: "800",
+        windowShowMenuBar: true,
+        windowFrame: true,
+        windowResizable: true,
+        windowFullscreenable: true,
+        windowAlwaysOnTop: false,
+        winIcon: DEFAULT_PROJECT_ICON,
+        linuxIcon: DEFAULT_PROJECT_ICON,
+        macIcon: DEFAULT_PROJECT_ICON,
+      },
+      mode: "html-only",
+      htmlEntry,
+    };
+  }
+
+  const pkg = await readProjectManifest(projectDir);
+  const build = pkg.build || {};
+  const winTargetNames = parseBuildTargetNames(build.win && build.win.target);
+  const linuxTargetNames = parseBuildTargetNames(build.linux && build.linux.target);
+  const macTargetNames = parseBuildTargetNames(build.mac && build.mac.target);
+
+  return {
+    defaults: {
+      appId: build.appId || "",
+      productName: build.productName || pkg.productName || pkg.name || "",
+      executableName: build.executableName || "",
+      artifactName: build.artifactName || "",
+      version: pkg.version || "",
+      author: toAuthorText(pkg.author),
+      description: pkg.description || "",
+      outputDir:
+        (build.directories && build.directories.output) || "release",
+      winTargets: winTargetNames
+        .filter((target) => target.toLowerCase() !== "portable")
+        .join(", "),
+      winPortable: winTargetNames.some(
+        (target) => target.toLowerCase() === "portable"
+      ),
+      linuxTargets: linuxTargetNames.join(", "),
+      macTargets: macTargetNames.join(", "),
+      filesGlobs: Array.isArray(build.files) ? build.files.join("\n") : "",
+      extraResources: Array.isArray(build.extraResources)
+        ? build.extraResources.join("\n")
+        : "",
+      asarUnpack: Array.isArray(build.asarUnpack)
+        ? build.asarUnpack.join("\n")
+        : "",
+      nsisShortcutName:
+        build.nsis && typeof build.nsis.shortcutName === "string"
+          ? build.nsis.shortcutName
+          : "",
+      nsisCreateDesktopShortcut:
+        build.nsis && typeof build.nsis.createDesktopShortcut === "boolean"
+          ? build.nsis.createDesktopShortcut
+            ? "always"
+            : "never"
+          : "auto",
+      nsisDeleteAppData:
+        build.nsis && Boolean(build.nsis.deleteAppDataOnUninstall),
+      windowTitle: build.productName || pkg.productName || pkg.name || "",
+      windowWidth: "1280",
+      windowHeight: "800",
+      windowShowMenuBar: true,
+      windowFrame: true,
+      windowResizable: true,
+      windowFullscreenable: true,
+      windowAlwaysOnTop: false,
+      winIcon: DEFAULT_PROJECT_ICON,
+      linuxIcon: DEFAULT_PROJECT_ICON,
+      macIcon: DEFAULT_PROJECT_ICON,
+    },
+    mode: "electron-project",
+  };
+}
+
+function buildTargetConfig(form) {
+  const winTargets = parseCommaList(form.winTargets);
+  const includePortable = Boolean(form.winPortable);
+  if (includePortable) {
+    const hasPortable = winTargets.some(
+      (target) => target.toLowerCase() === "portable"
+    );
+    if (!hasPortable) {
+      winTargets.push("portable");
+    }
+  }
+
+  const config = {
+    appId: form.appId || undefined,
+    productName: form.productName || undefined,
+    artifactName: form.artifactName || undefined,
+    executableName: form.executableName || undefined,
+    compression: form.compression || "normal",
+    asar: Boolean(form.asar),
+    npmRebuild: Boolean(form.npmRebuild),
+    directories: {
+      output: form.outputDir || "release",
+    },
+    files: parseLines(form.filesGlobs),
+    asarUnpack: parseLines(form.asarUnpack),
+    extraResources: parseLines(form.extraResources),
+    extraMetadata: {
+      version: form.version || undefined,
+      description: form.description || undefined,
+      author: form.author || undefined,
+    },
+    electronVersion: form.electronVersion || undefined,
+  };
+
+  if (!config.files.length) {
+    delete config.files;
+  }
+  if (!config.extraResources.length) {
+    delete config.extraResources;
+  }
+  if (!config.asarUnpack.length) {
+    delete config.asarUnpack;
+  }
+
+  config.win = {
+    icon: form.winIcon || undefined,
+    target: winTargets,
+    publisherName: form.publisherName || undefined,
+  };
+
+  config.nsis = {
+    oneClick: Boolean(form.nsisOneClick),
+    perMachine: Boolean(form.nsisPerMachine),
+    allowElevation: Boolean(form.nsisAllowElevation),
+    allowToChangeInstallationDirectory: Boolean(form.nsisAllowChangeDir),
+    shortcutName: form.nsisShortcutName || undefined,
+    createDesktopShortcut:
+      form.nsisCreateDesktopShortcut === "always"
+        ? true
+        : form.nsisCreateDesktopShortcut === "never"
+        ? false
+        : undefined,
+    deleteAppDataOnUninstall: Boolean(form.nsisDeleteAppData),
+  };
+
+  config.linux = {
+    icon: form.linuxIcon || undefined,
+    target: parseCommaList(form.linuxTargets),
+    category: form.linuxCategory || undefined,
+  };
+
+  config.mac = {
+    icon: form.macIcon || undefined,
+    target: parseCommaList(form.macTargets),
+    category: form.macCategory || undefined,
+  };
+
+  if (!config.win.target.length) {
+    delete config.win.target;
+  }
+  if (!config.linux.target.length) {
+    delete config.linux.target;
+  }
+  if (!config.mac.target.length) {
+    delete config.mac.target;
+  }
+
+  if (!config.win.icon && !config.win.target && !config.win.publisherName) {
+    delete config.win;
+  }
+  if (!config.linux.icon && !config.linux.target && !config.linux.category) {
+    delete config.linux;
+  }
+  if (!config.mac.icon && !config.mac.target && !config.mac.category) {
+    delete config.mac;
+  }
+
+  Object.keys(config.extraMetadata).forEach((key) => {
+    if (!config.extraMetadata[key]) {
+      delete config.extraMetadata[key];
+    }
+  });
+  if (Object.keys(config.extraMetadata).length === 0) {
+    delete config.extraMetadata;
+  }
+  if (!config.electronVersion) {
+    delete config.electronVersion;
+  }
+
+  return config;
+}
+
+function normalizeBuildForm(form, onLog = noop) {
+  const normalized = { ...form };
+
+  // Windows target paths in electron-builder may require app.asar integrity info.
+  // Keep asar enabled to avoid ENOENT on win-unpacked/resources/app.asar.
+  if (normalized.targetWindows && !normalized.asar) {
+    normalized.asar = true;
+    onLog("检测到 Windows 打包，已自动开启 asar 以避免 app.asar 缺失导致构建失败。\n");
+  }
+
+  return normalized;
+}
+
+async function prepareWorkspaceForBuild(form, onLog, onStatus = noop) {
+  const sourceDir = path.resolve(form.projectDir);
+  const pkgPath = path.join(sourceDir, "package.json");
+  const hasPkg = fssync.existsSync(pkgPath);
+
+  if (hasPkg) {
+    if (hasWindowUiOverride(form)) {
+      onLog("提示: 界面窗口选项仅对纯 HTML 自动补全模式生效，现有 Electron 项目将使用其自身窗口代码。\n");
+    }
+    return {
+      projectDir: sourceDir,
+      cleanup: async () => {},
+      normalizedForm: form,
+      htmlOnly: false,
+    };
+  }
+
+  updateStep(onStatus, STEP_KEYS.TEMP_PROJECT, "running", "创建临时 Electron 项目");
+
+  const htmlEntry = await findFirstHtmlFile(sourceDir);
+  if (!htmlEntry) {
+    throw new Error("目录缺少 package.json，且未找到任何 .html 文件，无法自动补全打包。");
+  }
+
+  onLog("检测到纯 HTML 项目，正在自动补全 Electron 打包结构...\n");
+
+  const tempProjectDir = path.join(
+    CACHE_PATHS.builderTemp,
+    `electron-html-pack-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+  );
+  const appSourceDir = path.join(tempProjectDir, "app-source");
+  await fs.mkdir(appSourceDir, { recursive: true });
+  await fs.cp(sourceDir, appSourceDir, { recursive: true, force: true });
+
+  const windowOptions = getGeneratedWindowOptions(form);
+  const mainJs = `const { app, BrowserWindow } = require("electron");\nconst path = require("node:path");\n\nconst WINDOW_OPTIONS = ${JSON.stringify(
+    windowOptions,
+    null,
+    2
+  )};\n\nfunction createWindow() {\n  const { showMenuBar, ...browserWindowOptions } = WINDOW_OPTIONS;\n  const win = new BrowserWindow(browserWindowOptions);\n  win.setMenuBarVisibility(Boolean(showMenuBar));\n  win.loadFile(path.join(__dirname, "app-source", ${JSON.stringify(
+    htmlEntry
+  )}));\n}\n\napp.whenReady().then(createWindow);\napp.on("window-all-closed", () => {\n  if (process.platform !== "darwin") app.quit();\n});\n`;
+
+  const fallbackName = sanitizeName(path.basename(sourceDir));
+  const fixedElectronVersion = resolveLocalElectronVersion();
+  const packageJson = {
+    name: fallbackName,
+    version: form.version || "1.0.0",
+    description: form.description || "Auto generated from html directory",
+    author: form.author || "",
+    main: "main.js",
+    private: true,
+    devDependencies: {
+      electron: fixedElectronVersion,
+    },
+  };
+
+  await fs.writeFile(path.join(tempProjectDir, "main.js"), mainJs, "utf-8");
+  await fs.writeFile(
+    path.join(tempProjectDir, "package.json"),
+    JSON.stringify(packageJson, null, 2),
+    "utf-8"
+  );
+
+  onLog(`已自动补全临时项目: ${tempProjectDir}\n`);
+  onLog("纯 HTML 模式将强制包含 main.js/package.json/app-source 以保证可运行。\n");
+  updateStep(onStatus, STEP_KEYS.TEMP_PROJECT, "done", "临时项目创建完成");
+
+  const normalizedFilesGlobs = normalizeHtmlOnlyFilesGlobs(form.filesGlobs);
+  const requestedOutputDir = (form.outputDir || "release").trim() || "release";
+  const resolvedOutputDir = path.isAbsolute(requestedOutputDir)
+    ? requestedOutputDir
+    : path.resolve(sourceDir, requestedOutputDir);
+  onLog(`纯 HTML 模式产物输出目录: ${resolvedOutputDir}\n`);
+
+  return {
+    projectDir: tempProjectDir,
+    cleanup: async () => {
+      await rmWithRetry(tempProjectDir, { recursive: true, force: true });
+    },
+    normalizedForm: {
+      ...form,
+      outputDir: resolvedOutputDir,
+      filesGlobs: normalizedFilesGlobs,
+      asar: true,
+      asarUnpack: form.asarUnpack || "",
+      npmRebuild: false,
+      electronVersion: form.electronVersion || fixedElectronVersion,
+    },
+    htmlOnly: true,
+  };
+}
+
+async function runBuild(form, onLog, onStatus = noop) {
+  if (activeBuild) {
+    throw new Error("已有打包任务在运行，请先取消或等待当前任务完成。");
+  }
+
+  if (!form.projectDir || !form.projectDir.trim()) {
+    throw new Error("请先选择要打包的 Electron 项目目录。");
+  }
+
+  updateOverall(onStatus, "running", "构建进行中");
+  updateStep(onStatus, STEP_KEYS.PREPARE, "running", "准备构建参数");
+
+  const projectDir = path.resolve(form.projectDir);
+  const prepared = await prepareWorkspaceForBuild(form, onLog, onStatus);
+  updateStep(onStatus, STEP_KEYS.PREPARE, "done", "构建参数准备完成");
+  const buildProjectDir = prepared.projectDir;
+  const pkg = await readProjectManifest(buildProjectDir);
+  if (!pkg.name) {
+    throw new Error("目标项目缺少有效名称，无法打包。");
+  }
+
+  const normalizedForm = normalizeBuildForm(prepared.normalizedForm, onLog);
+  if (!normalizedForm.electronVersion) {
+    normalizedForm.electronVersion = resolveLocalElectronVersion();
+  }
+  const config = buildTargetConfig(normalizedForm);
+  const tempConfigPath = path.join(
+    CACHE_PATHS.builderTemp,
+    `electron-builder-ui-${Date.now()}.json`
+  );
+  await fs.writeFile(tempConfigPath, JSON.stringify(config, null, 2), "utf-8");
+
+  const localBuilderCli = path.join(
+    __dirname,
+    "node_modules",
+    "electron-builder",
+    "cli.js"
+  );
+
+  let cli;
+  let args;
+  let useLocalBuilder = false;
+  if (fssync.existsSync(localBuilderCli)) {
+    cli = process.platform === "win32" ? "npx.cmd" : "npx";
+    args = [
+      "--no-install",
+      "electron-builder",
+      "--projectDir",
+      buildProjectDir,
+      "--config",
+      tempConfigPath,
+    ];
+    useLocalBuilder = true;
+  } else {
+    cli = process.platform === "win32" ? "npx.cmd" : "npx";
+    args = [
+      "electron-builder",
+      "--projectDir",
+      buildProjectDir,
+      "--config",
+      tempConfigPath,
+    ];
+  }
+
+  onLog(`执行命令: ${cli} ${args.join(" ")}\n`);
+
+  for (const arch of parseArchFlags(normalizedForm.arches)) {
+    args.push(`--${arch}`);
+  }
+
+  if (normalizedForm.targetWindows) {
+    args.push("--win");
+  }
+  if (normalizedForm.targetLinux) {
+    args.push("--linux");
+  }
+  if (normalizedForm.targetMac) {
+    args.push("--mac");
+  }
+  if (
+    !normalizedForm.targetWindows &&
+    !normalizedForm.targetLinux &&
+    !normalizedForm.targetMac
+  ) {
+    onLog("未选择平台，electron-builder 将使用项目默认配置。\n");
+  }
+
+  if (useLocalBuilder) {
+    onLog("检测到本地 electron-builder，已通过 npx --no-install 调用。\n");
+  }
+
+  return new Promise((resolve, reject) => {
+    const childEnv = {
+      ...process.env,
+      TEMP: CACHE_PATHS.appTemp,
+      TMP: CACHE_PATHS.appTemp,
+      TMPDIR: CACHE_PATHS.appTemp,
+      XDG_CACHE_HOME: LOCAL_CACHE_ROOT,
+      EBUILDER_CACHE: CACHE_PATHS.builderCache,
+      ELECTRON_BUILDER_CACHE: CACHE_PATHS.builderCache,
+      ELECTRON_CACHE: CACHE_PATHS.electronDownloadCache,
+      npm_config_cache: CACHE_PATHS.npmCache,
+      NPM_CONFIG_CACHE: CACHE_PATHS.npmCache,
+    };
+
+    const child = spawn(cli, args, {
+      cwd: buildProjectDir,
+      env: childEnv,
+      shell: process.platform === "win32",
+      windowsHide: true,
+    });
+
+    const session = {
+      child,
+      tempConfigPath,
+      cleanupProject: prepared.cleanup,
+      stepMarks: {
+        installStarted: false,
+        installCompleted: false,
+        packageStarted: false,
+        artifactStarted: false,
+      },
+      canceled: false,
+      startMs: Date.now(),
+    };
+    activeBuild = session;
+
+    async function cleanup() {
+      try {
+        await rmWithRetry(tempConfigPath, { force: true });
+      } catch (error) {
+        onLog(`清理临时配置文件失败（已忽略）: ${error.message}\n`);
+      }
+
+      try {
+        await session.cleanupProject();
+      } catch (error) {
+        onLog(`清理临时项目目录失败（已忽略）: ${error.message}\n`);
+      }
+
+      if (activeBuild === session) {
+        activeBuild = null;
+      }
+    }
+
+    child.stdout.on("data", (chunk) => {
+      const text = chunk.toString();
+      onLog(text);
+      handleBuilderChunk(text, session.stepMarks, onStatus);
+    });
+
+    child.stderr.on("data", (chunk) => {
+      const text = chunk.toString();
+      onLog(text);
+      handleBuilderChunk(text, session.stepMarks, onStatus);
+    });
+
+    child.on("error", async (error) => {
+      await cleanup();
+      updateOverall(onStatus, "failed", "构建启动失败");
+      updateStep(onStatus, STEP_KEYS.COMPLETE, "failed", "构建失败");
+      reject(new Error(`启动打包进程失败: ${error.message}`));
+    });
+
+    child.on("close", async (code) => {
+      await cleanup();
+      const durationMs = Date.now() - session.startMs;
+
+      if (session.canceled) {
+        updateOverall(onStatus, "canceled", "构建已取消");
+        updateStep(onStatus, STEP_KEYS.COMPLETE, "failed", "构建已取消");
+        resolve({ success: false, canceled: true, code, durationMs });
+        return;
+      }
+
+      if (code === 0) {
+        if (!session.stepMarks.installCompleted) {
+          updateStep(onStatus, STEP_KEYS.INSTALL, "done", "依赖安装完成");
+        }
+        if (!session.stepMarks.packageStarted) {
+          updateStep(onStatus, STEP_KEYS.PACKAGE, "done", "应用封装完成");
+        } else {
+          updateStep(onStatus, STEP_KEYS.PACKAGE, "done", "应用封装完成");
+        }
+        updateStep(onStatus, STEP_KEYS.ARTIFACT, "done", "安装包生成完成");
+        updateStep(onStatus, STEP_KEYS.COMPLETE, "done", "构建成功");
+        updateOverall(onStatus, "success", "构建成功");
+        resolve({ success: true, code, durationMs });
+      } else {
+        updateOverall(onStatus, "failed", "构建失败");
+        updateStep(onStatus, STEP_KEYS.COMPLETE, "failed", "构建失败");
+        reject(new Error(`打包失败，退出码: ${code}`));
+      }
+    });
+  });
+}
+
+app.whenReady().then(() => {
+  cleanupLegacyTempArtifacts().catch(noop);
+  createWindow();
+
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit();
+  }
+});
+
+ipcMain.handle("dialog:pickProject", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openDirectory"],
+    title: "选择要打包的 Electron 项目目录",
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return "";
+  }
+
+  return result.filePaths[0];
+});
+
+ipcMain.handle("dialog:pickOutput", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openDirectory", "createDirectory"],
+    title: "选择打包输出目录",
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return "";
+  }
+
+  return result.filePaths[0];
+});
+
+ipcMain.handle("dialog:pickIcon", async (_, extensions) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openFile"],
+    filters: [
+      {
+        name: "Icon",
+        extensions:
+          Array.isArray(extensions) && extensions.length > 0
+            ? extensions
+            : ["ico", "icns", "png"],
+      },
+      { name: "All Files", extensions: ["*"] },
+    ],
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return "";
+  }
+
+  return result.filePaths[0];
+});
+
+ipcMain.handle("settings:load", async () => {
+  const saved = await readSettings();
+  return {
+    ...getDefaultFormSettings(),
+    ...(saved || {}),
+  };
+});
+
+ipcMain.handle("settings:save", async (_, settings) => {
+  await writeSettings(settings || {});
+  return { success: true };
+});
+
+ipcMain.handle("project:inspect", async (_, projectDir) => {
+  try {
+    const result = await inspectProjectDefaults(projectDir);
+    return { success: true, ...result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("builder:cancel", async () => {
+  if (!activeBuild || !activeBuild.child) {
+    return { success: false, error: "当前没有正在运行的打包任务。" };
+  }
+
+  activeBuild.canceled = true;
+  const killed = activeBuild.child.kill();
+  if (!killed) {
+    return { success: false, error: "取消请求已发送，但进程暂未响应。" };
+  }
+  return { success: true };
+});
+
+ipcMain.handle("cache:clear", async () => {
+  if (activeBuild) {
+    return { success: false, error: "构建进行中，暂不能清理缓存。" };
+  }
+
+  try {
+    const result = await clearLocalCaches();
+    return { success: true, ...result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("builder:run", async (_, form) => {
+  if (!mainWindow) {
+    throw new Error("窗口未初始化。");
+  }
+
+  try {
+    const result = await runBuild(
+      form,
+      (line) => {
+        mainWindow.webContents.send("builder:log", line);
+      },
+      (payload) => {
+        mainWindow.webContents.send("builder:status", payload);
+      }
+    );
+    return { success: true, result };
+  } catch (error) {
+    mainWindow.webContents.send("builder:log", `${error.message}\n`);
+    mainWindow.webContents.send("builder:status", {
+      type: "overall",
+      state: "failed",
+      text: error.message,
+    });
+    return { success: false, error: error.message };
+  }
+});
