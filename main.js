@@ -1404,7 +1404,11 @@ ipcMain.handle("settings:load", async () => {
 });
 
 ipcMain.handle("settings:save", async (_, settings) => {
-  await writeSettings(settings || {});
+  const current = await readSettings();
+  await writeSettings({
+    ...(current || {}),
+    ...(settings || {}),
+  });
   return { success: true };
 });
 

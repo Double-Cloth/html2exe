@@ -50,6 +50,27 @@ const formFieldIds = [
   "windowAlwaysOnTop",
 ];
 
+function getConfigFieldIds() {
+  const ids = new Set(formFieldIds);
+
+  document
+    .querySelectorAll(".tab-content input[id], .tab-content select[id], .tab-content textarea[id]")
+    .forEach((el) => {
+      if (!el.id) {
+        return;
+      }
+
+      // Skip non-config controls and readonly hint fields.
+      if (el.readOnly || el.type === "button" || el.type === "submit" || el.type === "reset") {
+        return;
+      }
+
+      ids.add(el.id);
+    });
+
+  return Array.from(ids);
+}
+
 const dom = {
   goOutputPageBtn: document.getElementById("goOutputPageBtn"),
   goConfigPageBtn: document.getElementById("goConfigPageBtn"),
@@ -305,7 +326,7 @@ function applyStatusPayload(payload) {
 
 function gatherFormState() {
   const payload = {};
-  for (const id of formFieldIds) {
+  for (const id of getConfigFieldIds()) {
     const el = document.getElementById(id);
     if (!el) {
       continue;
@@ -323,7 +344,7 @@ function applyStateToForm(state) {
   if (!state || typeof state !== "object") {
     return;
   }
-  for (const id of formFieldIds) {
+  for (const id of getConfigFieldIds()) {
     const el = document.getElementById(id);
     if (!el || !(id in state)) {
       continue;
@@ -344,8 +365,10 @@ function applyDefaultsToForm(defaults) {
     return;
   }
 
+  const configFieldSet = new Set(getConfigFieldIds());
+
   Object.entries(defaults).forEach(([key, value]) => {
-    if (!formFieldIds.includes(key)) {
+    if (!configFieldSet.has(key)) {
       return;
     }
     const el = document.getElementById(key);
@@ -390,9 +413,21 @@ function setPresetHint(presetKey) {
 
 function syncTargetDependentControls() {
   const targetRows = [
-    { checkedEl: dom.targetWindows, controls: [dom.winTargets, dom.winPortable] },
-    { checkedEl: dom.targetLinux, controls: [dom.linuxTargets] },
-    { checkedEl: dom.targetMac, controls: [dom.macTargets] },
+    {
+      checkedEl: dom.targetWindows,
+      controls: [
+        { el: dom.winTargets, disableWhenUnchecked: false },
+        { el: dom.winPortable, disableWhenUnchecked: true },
+      ],
+    },
+    {
+      checkedEl: dom.targetLinux,
+      controls: [{ el: dom.linuxTargets, disableWhenUnchecked: false }],
+    },
+    {
+      checkedEl: dom.targetMac,
+      controls: [{ el: dom.macTargets, disableWhenUnchecked: false }],
+    },
   ];
 
   targetRows.forEach(({ checkedEl, controls }) => {
@@ -400,11 +435,11 @@ function syncTargetDependentControls() {
       return;
     }
     const enabled = checkedEl.checked;
-    controls.forEach((el) => {
+    controls.forEach(({ el, disableWhenUnchecked }) => {
       if (!el) {
         return;
       }
-      el.disabled = !enabled;
+      el.disabled = Boolean(disableWhenUnchecked && !enabled);
       el.classList.toggle("disabled-by-target", !enabled);
     });
   });
@@ -548,7 +583,7 @@ function setFormBusy(busy) {
     }
   };
 
-  formFieldIds.forEach((id) => {
+  getConfigFieldIds().forEach((id) => {
     const el = document.getElementById(id);
     if (el) {
       el.disabled = busy;
@@ -634,6 +669,21 @@ async function saveConfig() {
   } finally {
     setButtonBusy(dom.saveConfigBtn, false);
   }
+}
+
+async function saveRuntimeOverridesSnapshot() {
+  const current = await window.builderApi.loadSettings();
+  const merged = {
+    ...(current || {}),
+    electronVersion: (document.getElementById("electronVersion")?.value || "").trim(),
+    chromiumVersion: (document.getElementById("chromiumVersion")?.value || "").trim(),
+    nodeVersion: (document.getElementById("nodeVersion")?.value || "").trim(),
+    clearRuntimeOverridesAfterBuild: Boolean(
+      document.getElementById("clearRuntimeOverridesAfterBuild")?.checked
+    ),
+  };
+
+  await window.builderApi.saveSettings(merged);
 }
 
 async function clearRuntimeOverridesIfNeeded(payload) {
@@ -871,6 +921,25 @@ async function init() {
     });
   }
 
+  [
+    "electronVersion",
+    "chromiumVersion",
+    "nodeVersion",
+    "clearRuntimeOverridesAfterBuild",
+  ].forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) {
+      return;
+    }
+
+    const eventName = el.type === "checkbox" ? "change" : "blur";
+    el.addEventListener(eventName, () => {
+      saveRuntimeOverridesSnapshot().catch((error) => {
+        appendLog(`运行时高级控制自动保存失败: ${error.message}`, "error");
+      });
+    });
+  });
+
   if (dom.chooseHostPlatformBtn) {
     dom.chooseHostPlatformBtn.addEventListener("click", () => {
       const hostKey = getCurrentHostTargetKey();
@@ -909,6 +978,26 @@ async function init() {
       return;
     }
     el.addEventListener("change", () => {
+      syncTargetDependentControls();
+    });
+  });
+
+  const platformTypeBindings = [
+    { targetCheckbox: dom.targetWindows, targetSelect: dom.winTargets },
+    { targetCheckbox: dom.targetLinux, targetSelect: dom.linuxTargets },
+    { targetCheckbox: dom.targetMac, targetSelect: dom.macTargets },
+  ];
+
+  platformTypeBindings.forEach(({ targetCheckbox, targetSelect }) => {
+    if (!targetCheckbox || !targetSelect) {
+      return;
+    }
+
+    targetSelect.addEventListener("change", () => {
+      // Choosing an artifact type implies this platform should be included.
+      if (!targetCheckbox.checked) {
+        targetCheckbox.checked = true;
+      }
       syncTargetDependentControls();
     });
   });
