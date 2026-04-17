@@ -1103,6 +1103,28 @@ function resolveBuilderRuntime() {
     };
   }
 
+  // 检查 process.execPath 是否为 Electron 可执行文件（含 electron/html2exe 等）
+  const execPathLower = String(process.execPath || "").toLowerCase();
+  const isElectronExecutable = execPathLower.includes("electron") || 
+                               execPathLower.includes("html2exe") ||
+                               execPathLower.includes(".asar");
+  
+  // 如果是 Electron 可执行文件，尝试使用 npm exec 作为后备
+  if (isElectronExecutable) {
+    const npmProbe = spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", ["--version"], {
+      windowsHide: true,
+      encoding: "utf-8",
+    });
+    
+    if (npmProbe.status === 0) {
+      return {
+        command: process.platform === "win32" ? "npm.cmd" : "npm",
+        mode: "npm-exec-fallback",
+        useFallback: true,
+      };
+    }
+  }
+
   return {
     command: process.execPath,
     mode: "electron-node",
@@ -1137,32 +1159,34 @@ function resolveLocalBuilderCliPath() {
 
 async function resolveBuilderLauncher(runtime, onLog = noop) {
   const localBuilderCli = resolveLocalBuilderCliPath();
-  if (localBuilderCli) {
+  if (localBuilderCli && !runtime.useFallback) {
     onLog(`检测到可用 electron-builder CLI: ${localBuilderCli}\n`);
     return {
       source: "local",
       command: runtime.command,
       prefixArgs: [localBuilderCli],
       mode: runtime.mode,
-      description: "本地 electron-builder CLI",
+      description: "本地 electron-builder CLI（" + runtime.mode + "）",
     };
   }
 
   let cacheBootstrapError = "";
-  try {
-    const cachedBuilderCli = await bootstrapCachedBuilderCli(onLog);
-    if (cachedBuilderCli) {
-      return {
-        source: "cache",
-        command: runtime.command,
-        prefixArgs: [cachedBuilderCli],
-        mode: runtime.mode,
-        description: "缓存工具链 electron-builder CLI",
-      };
+  if (!runtime.useFallback) {
+    try {
+      const cachedBuilderCli = await bootstrapCachedBuilderCli(onLog);
+      if (cachedBuilderCli) {
+        return {
+          source: "cache",
+          command: runtime.command,
+          prefixArgs: [cachedBuilderCli],
+          mode: runtime.mode,
+          description: "缓存工具链 electron-builder CLI",
+        };
+      }
+    } catch (error) {
+      cacheBootstrapError = error && error.message ? error.message : String(error || "未知错误");
+      onLog(`缓存工具链初始化失败，将尝试 npx/npm 兜底: ${cacheBootstrapError}\n`);
     }
-  } catch (error) {
-    cacheBootstrapError = error && error.message ? error.message : String(error || "未知错误");
-    onLog(`缓存工具链初始化失败，将尝试 npx/npm 兜底: ${cacheBootstrapError}\n`);
   }
 
   const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
@@ -1580,7 +1604,6 @@ async function ensureProjectDependencies(projectDir, runtime, onLog = noop, onSt
     onLog(`内置 npm-cli 检索路径: ${checkedRoots.join(" | ")}\n`);
     throw new Error("当前环境未检测到 npm，且未找到内置 npm-cli，无法自动安装项目依赖。请使用带内置工具链的新版本重新打包本工具。");
   }
-
   const hasPackageLock = await pathExists(path.join(projectDir, "package-lock.json"));
   const installArgs = [
     hasPackageLock ? "ci" : "install",
@@ -1858,8 +1881,9 @@ async function runBuild(form, onLog, onStatus = noop) {
     onLog("未选择平台，electron-builder 将使用项目默认配置。\n");
   }
 
+  const finalCommand = [...launcher.prefixArgs, ...args].join(" ");
   onLog(
-    `执行命令: ${launcher.command} ${[...launcher.prefixArgs, ...args].join(" ")}\n`
+    `执行命令: ${launcher.command} ${finalCommand}\n`
   );
   onLog(`已选择构建器入口: ${launcher.description}（${launcher.mode}）。\n`);
 
