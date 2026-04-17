@@ -108,6 +108,53 @@
                 <input id="npmRebuild" type="checkbox" checked />
               </div>
             </div>
+            <div class="section-title">运行时高级控制</div>
+            <div class="grid three-col">
+              <div class="field-row">
+                <label for="electronVersion">Electron 版本</label>
+                <input id="electronVersion" type="text" list="electronVersionOptions" placeholder="选择或输入，如 41.2.0；留空使用本地默认" />
+                <datalist id="electronVersionOptions">
+                  <option value="41.2.0"></option>
+                  <option value="40.3.0"></option>
+                  <option value="39.4.0"></option>
+                  <option value="38.6.0"></option>
+                  <option value="37.5.0"></option>
+                  <option value="36.4.0"></option>
+                </datalist>
+              </div>
+              <div class="field-row">
+                <label for="chromiumVersion">Chromium 版本覆盖 (高级)</label>
+                <input id="chromiumVersion" type="text" list="chromiumVersionOptions" placeholder="选择或输入，如 134.0.6998，可留空" />
+                <datalist id="chromiumVersionOptions">
+                  <option value="138.0.7204"></option>
+                  <option value="136.0.7103"></option>
+                  <option value="134.0.6998"></option>
+                  <option value="132.0.6834"></option>
+                  <option value="130.0.6723"></option>
+                  <option value="128.0.6613"></option>
+                </datalist>
+              </div>
+              <div class="field-row">
+                <label for="nodeVersion">Node.js 版本覆盖 (高级)</label>
+                <input id="nodeVersion" type="text" list="nodeVersionOptions" placeholder="选择或输入，如 22.13.1，可留空" />
+                <datalist id="nodeVersionOptions">
+                  <option value="24.2.0"></option>
+                  <option value="22.13.1"></option>
+                  <option value="22.12.0"></option>
+                  <option value="20.18.1"></option>
+                  <option value="20.16.0"></option>
+                  <option value="18.20.4"></option>
+                </datalist>
+              </div>
+            </div>
+            <div class="field-row">
+              <label>说明</label>
+              <input type="text" value="Chromium/Node.js 覆盖会以环境变量注入构建流程，适用于原生依赖编译与自定义脚本控制。" readonly />
+            </div>
+            <div class="field-row checkbox-row">
+              <label for="clearRuntimeOverridesAfterBuild">打包结束后自动清空高级版本字段（Electron/Chromium/Node.js）</label>
+              <input id="clearRuntimeOverridesAfterBuild" type="checkbox" />
+            </div>
             <div class="field-row checkbox-row inline-checks">
               <label>目标操作系统</label>
               <div class="checks">

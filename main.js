@@ -459,10 +459,14 @@ function getSettingsPath() {
 }
 
 function getDefaultFormSettings() {
+  const localElectronVersion = resolveLocalElectronVersion();
   return {
     winIcon: DEFAULT_PROJECT_ICON,
     linuxIcon: DEFAULT_PROJECT_ICON,
     macIcon: DEFAULT_PROJECT_ICON,
+    electronVersion: localElectronVersion,
+    chromiumVersion: "",
+    nodeVersion: "",
   };
 }
 
@@ -632,6 +636,34 @@ function resolveLocalElectronVersion() {
   return "41.2.0";
 }
 
+function normalizeVersionInput(raw) {
+  const value = String(raw || "").trim();
+  if (!value) {
+    return "";
+  }
+  const match = value.match(/\d+\.\d+(?:\.\d+)?(?:[-.][0-9A-Za-z.]+)?/);
+  return match ? match[0] : "";
+}
+
+function resolveElectronVersionFromManifest(pkg, build) {
+  const fromBuild = normalizeVersionInput(build && build.electronVersion);
+  if (fromBuild) {
+    return fromBuild;
+  }
+
+  const fromDev = normalizeVersionInput(pkg && pkg.devDependencies && pkg.devDependencies.electron);
+  if (fromDev) {
+    return fromDev;
+  }
+
+  const fromDeps = normalizeVersionInput(pkg && pkg.dependencies && pkg.dependencies.electron);
+  if (fromDeps) {
+    return fromDeps;
+  }
+
+  return resolveLocalElectronVersion();
+}
+
 function parsePositiveInt(raw, fallback) {
   const value = Number.parseInt(String(raw || ""), 10);
   if (Number.isFinite(value) && value > 0) {
@@ -785,6 +817,7 @@ async function inspectProjectDefaults(projectDirInput) {
   const winTargetNames = parseBuildTargetNames(build.win && build.win.target);
   const linuxTargetNames = parseBuildTargetNames(build.linux && build.linux.target);
   const macTargetNames = parseBuildTargetNames(build.mac && build.mac.target);
+  const electronVersion = resolveElectronVersionFromManifest(pkg, build);
 
   return {
     defaults: {
@@ -797,6 +830,9 @@ async function inspectProjectDefaults(projectDirInput) {
       description: pkg.description || "",
       outputDir:
         (build.directories && build.directories.output) || "release",
+      electronVersion,
+      chromiumVersion: "",
+      nodeVersion: "",
       winTargets: winTargetNames
         .filter((target) => target.toLowerCase() !== "portable")
         .join(", "),
@@ -965,6 +1001,48 @@ function normalizeBuildForm(form, onLog = noop) {
   return normalized;
 }
 
+function applyRuntimeVersionOverrides(form, childEnv, onLog = noop) {
+  const electronVersion = normalizeVersionInput(form.electronVersion);
+  const chromiumVersion = normalizeVersionInput(form.chromiumVersion);
+  const nodeVersion = normalizeVersionInput(form.nodeVersion);
+
+  if (electronVersion) {
+    childEnv.npm_config_target = electronVersion;
+    childEnv.NPM_CONFIG_TARGET = electronVersion;
+    childEnv.npm_config_runtime = "electron";
+    childEnv.NPM_CONFIG_RUNTIME = "electron";
+    childEnv.npm_config_disturl = "https://electronjs.org/headers";
+    childEnv.NPM_CONFIG_DISTURL = "https://electronjs.org/headers";
+  }
+
+  if (chromiumVersion) {
+    childEnv.CHROMIUM_VERSION = chromiumVersion;
+    childEnv.npm_config_chromium_version = chromiumVersion;
+    childEnv.NPM_CONFIG_CHROMIUM_VERSION = chromiumVersion;
+  }
+
+  if (nodeVersion) {
+    childEnv.NODE_VERSION = nodeVersion;
+    childEnv.npm_config_node_version = nodeVersion;
+    childEnv.NPM_CONFIG_NODE_VERSION = nodeVersion;
+  }
+
+  const runtimeSegments = [];
+  if (electronVersion) {
+    runtimeSegments.push(`Electron=${electronVersion}`);
+  }
+  if (chromiumVersion) {
+    runtimeSegments.push(`Chromium=${chromiumVersion}`);
+  }
+  if (nodeVersion) {
+    runtimeSegments.push(`Node.js=${nodeVersion}`);
+  }
+
+  if (runtimeSegments.length > 0) {
+    onLog(`已应用运行时高级版本覆盖: ${runtimeSegments.join(", ")}\n`);
+  }
+}
+
 async function prepareWorkspaceForBuild(form, onLog, onStatus = noop) {
   const sourceDir = path.resolve(form.projectDir);
   const pkgPath = path.join(sourceDir, "package.json");
@@ -1009,6 +1087,7 @@ async function prepareWorkspaceForBuild(form, onLog, onStatus = noop) {
 
   const fallbackName = sanitizeName(path.basename(sourceDir));
   const fixedElectronVersion = resolveLocalElectronVersion();
+  const requestedElectronVersion = normalizeVersionInput(form.electronVersion) || fixedElectronVersion;
   const packageJson = {
     name: fallbackName,
     version: form.version || "1.0.0",
@@ -1017,7 +1096,7 @@ async function prepareWorkspaceForBuild(form, onLog, onStatus = noop) {
     main: "main.js",
     private: true,
     devDependencies: {
-      electron: fixedElectronVersion,
+      electron: requestedElectronVersion,
     },
   };
 
@@ -1057,7 +1136,7 @@ async function prepareWorkspaceForBuild(form, onLog, onStatus = noop) {
       asar: true,
       asarUnpack: form.asarUnpack || "",
       npmRebuild: false,
-      electronVersion: form.electronVersion || fixedElectronVersion,
+      electronVersion: requestedElectronVersion,
     },
     htmlOnly: true,
   };
@@ -1123,6 +1202,8 @@ async function runBuild(form, onLog, onStatus = noop) {
     npm_config_cache: CACHE_PATHS.npmCache,
     NPM_CONFIG_CACHE: CACHE_PATHS.npmCache,
   };
+
+  applyRuntimeVersionOverrides(normalizedForm, childEnv, onLog);
 
   if (runtime.mode === "electron-node") {
     childEnv.ELECTRON_RUN_AS_NODE = "1";

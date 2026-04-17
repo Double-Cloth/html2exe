@@ -13,6 +13,10 @@ const formFieldIds = [
   "arches",
   "asar",
   "npmRebuild",
+  "electronVersion",
+  "chromiumVersion",
+  "nodeVersion",
+  "clearRuntimeOverridesAfterBuild",
   "targetWindows",
   "targetLinux",
   "targetMac",
@@ -451,6 +455,13 @@ function isSemverLike(version) {
   return /^\d+\.\d+\.\d+([-.][0-9A-Za-z.]+)?$/.test(version);
 }
 
+function isRuntimeVersionLike(version) {
+  if (!version) {
+    return true;
+  }
+  return /^\d+\.\d+(\.\d+)?([-.][0-9A-Za-z.]+)?$/.test(version);
+}
+
 function getInvalidArches(raw) {
   if (!raw) {
     return [];
@@ -479,6 +490,15 @@ function validateBeforeBuild(payload) {
   }
   if (!isSemverLike(payload.version)) {
     return "版本号格式建议为 x.y.z，例如 1.0.0。";
+  }
+  if (!isRuntimeVersionLike(payload.electronVersion)) {
+    return "Electron 版本格式无效，请使用如 41.2.0。";
+  }
+  if (!isRuntimeVersionLike(payload.chromiumVersion)) {
+    return "Chromium 版本格式无效，请使用如 134.0.6998。";
+  }
+  if (!isRuntimeVersionLike(payload.nodeVersion)) {
+    return "Node.js 版本格式无效，请使用如 22.13.1。";
   }
   const invalidArches = getInvalidArches(payload.arches);
   if (invalidArches.length > 0) {
@@ -616,6 +636,39 @@ async function saveConfig() {
   }
 }
 
+async function clearRuntimeOverridesIfNeeded(payload) {
+  if (!payload || !payload.clearRuntimeOverridesAfterBuild) {
+    return;
+  }
+
+  const normalized = {
+    ...payload,
+    electronVersion: "",
+    chromiumVersion: "",
+    nodeVersion: "",
+    clearRuntimeOverridesAfterBuild: true,
+  };
+
+  ["electronVersion", "chromiumVersion", "nodeVersion"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el && "value" in el) {
+      el.value = "";
+    }
+  });
+
+  const autoClearFlag = document.getElementById("clearRuntimeOverridesAfterBuild");
+  if (autoClearFlag && autoClearFlag.type === "checkbox") {
+    autoClearFlag.checked = true;
+  }
+
+  const saveResult = await window.builderApi.saveSettings(normalized);
+  if (saveResult?.success) {
+    appendLog("已按开关设置自动清空高级版本字段。", "ok");
+  } else {
+    appendLog("自动清空高级版本字段失败，请手动检查配置。", "error");
+  }
+}
+
 async function runBuild() {
   if (isBuilding) {
     setActionFeedback("已有打包任务在运行，请稍后或先取消。", "error", 2200);
@@ -667,6 +720,11 @@ async function runBuild() {
     appendLog(`打包异常: ${error.message}`, "error");
     setOverallStatus("failed", "构建失败");
   } finally {
+    try {
+      await clearRuntimeOverridesIfNeeded(payload);
+    } catch (error) {
+      appendLog(`自动清空高级版本字段异常: ${error.message}`, "error");
+    }
     setButtonBusy(dom.buildBtn, false);
     setFormBusy(false);
   }
