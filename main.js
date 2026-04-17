@@ -18,11 +18,7 @@ const fs = require("node:fs/promises");
 const fssync = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
-const http = require("node:http");
-const https = require("node:https");
-const { pipeline } = require("node:stream/promises");
 const { spawn, spawnSync } = require("node:child_process");
-const tar = require("tar");
 
 const SETTINGS_FILE_NAME = "builder-settings.json";
 const ELECTRON_BUILDER_VERSION = "26.8.1";
@@ -65,108 +61,48 @@ async function pathExists(targetPath) {
   }
 }
 
-function getHttpClient(url) {
-  return String(url || "").startsWith("https:") ? https : http;
-}
+function runCommandCapture(command, args, options = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      ...options,
+      stdio: "pipe",
+    });
 
-async function downloadFileWithRedirect(url, outputPath, redirectDepth = 0) {
-  if (redirectDepth > 5) {
-    throw new Error("工具链下载重定向次数过多。");
-  }
+    let stdout = "";
+    let stderr = "";
 
-  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
 
-  await new Promise((resolve, reject) => {
-    const client = getHttpClient(url);
-    const request = client.get(
-      url,
-      {
-        headers: {
-          Accept: "application/json,application/octet-stream,*/*",
-          "User-Agent": "html2exe-toolchain-bootstrap/1.0",
-        },
-      },
-      async (response) => {
-        const { statusCode = 0, headers = {} } = response;
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
 
-        if (statusCode >= 300 && statusCode < 400 && headers.location) {
-          response.resume();
-          try {
-            const redirectedUrl = new URL(headers.location, url).toString();
-            await downloadFileWithRedirect(redirectedUrl, outputPath, redirectDepth + 1);
-            resolve();
-          } catch (error) {
-            reject(error);
-          }
-          return;
-        }
+    child.on("error", (error) => {
+      resolve({
+        code: -1,
+        stdout,
+        stderr: `${stderr}\n${error.message}`.trim(),
+      });
+    });
 
-        if (statusCode < 200 || statusCode >= 300) {
-          response.resume();
-          reject(new Error(`工具链下载失败，HTTP ${statusCode}`));
-          return;
-        }
-
-        const fileStream = fssync.createWriteStream(outputPath);
-        try {
-          await pipeline(response, fileStream);
-          resolve();
-        } catch (error) {
-          reject(error);
-        }
-      }
-    );
-
-    request.on("error", reject);
+    child.on("close", (code) => {
+      resolve({ code: Number(code), stdout, stderr });
+    });
   });
 }
 
-async function fetchJsonWithRedirect(url, redirectDepth = 0) {
-  if (redirectDepth > 5) {
-    throw new Error("工具链元数据重定向次数过多。");
+function isCachedBuilderComplete(cacheDir) {
+  try {
+    require.resolve("electron-builder/cli.js", { paths: [cacheDir] });
+    require.resolve("app-builder-lib/out/electron/electronVersion", {
+      paths: [cacheDir],
+    });
+    return true;
+  } catch (error) {
+    return false;
   }
-
-  return new Promise((resolve, reject) => {
-    const client = getHttpClient(url);
-    const request = client.get(
-      url,
-      {
-        headers: {
-          Accept: "application/json",
-          "User-Agent": "html2exe-toolchain-bootstrap/1.0",
-        },
-      },
-      (response) => {
-        const { statusCode = 0, headers = {} } = response;
-
-        if (statusCode >= 300 && statusCode < 400 && headers.location) {
-          response.resume();
-          const redirectedUrl = new URL(headers.location, url).toString();
-          fetchJsonWithRedirect(redirectedUrl, redirectDepth + 1).then(resolve).catch(reject);
-          return;
-        }
-
-        if (statusCode < 200 || statusCode >= 300) {
-          response.resume();
-          reject(new Error(`获取工具链元数据失败，HTTP ${statusCode}`));
-          return;
-        }
-
-        const chunks = [];
-        response.on("data", (chunk) => chunks.push(chunk));
-        response.on("end", () => {
-          try {
-            const content = Buffer.concat(chunks).toString("utf-8");
-            resolve(JSON.parse(content));
-          } catch (error) {
-            reject(new Error(`工具链元数据解析失败: ${error.message}`));
-          }
-        });
-      }
-    );
-
-    request.on("error", reject);
-  });
 }
 
 async function bootstrapCachedBuilderCli(onLog = noop) {
@@ -177,67 +113,69 @@ async function bootstrapCachedBuilderCli(onLog = noop) {
   cachedBuilderBootstrapPromise = (async () => {
     const cacheDir = path.join(CACHE_PATHS.toolchainRoot, `electron-builder-${ELECTRON_BUILDER_VERSION}`);
     const cliCandidates = [
-      path.join(cacheDir, "cli.js"),
-      path.join(cacheDir, "out", "cli", "cli.js"),
+      path.join(cacheDir, "node_modules", "electron-builder", "cli.js"),
+      path.join(cacheDir, "node_modules", "electron-builder", "out", "cli", "cli.js"),
     ];
+
+    if (isCachedBuilderComplete(cacheDir)) {
+      for (const candidate of cliCandidates) {
+        if (await pathExists(candidate)) {
+          return candidate;
+        }
+      }
+    }
+
+    const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+    if (!hasExecutable(npmCommand)) {
+      throw new Error("当前环境未检测到 npm，无法自动安装缓存工具链。");
+    }
+
+    await rmWithRetry(cacheDir, { recursive: true, force: true }).catch(noop);
+    await fs.mkdir(cacheDir, { recursive: true });
+
+    const toolchainPkg = {
+      name: "html2exe-toolchain-cache",
+      private: true,
+      version: "1.0.0",
+      description: "cached build toolchain for html2exe",
+      dependencies: {
+        "electron-builder": ELECTRON_BUILDER_VERSION,
+      },
+    };
+    await fs.writeFile(
+      path.join(cacheDir, "package.json"),
+      JSON.stringify(toolchainPkg, null, 2),
+      "utf-8"
+    );
+
+    onLog(`本地工具链缺失，正在下载并安装 electron-builder@${ELECTRON_BUILDER_VERSION} 到缓存目录...\n`);
+    const installResult = await runCommandCapture(
+      npmCommand,
+      ["install", "--no-audit", "--no-fund", "--include=optional"],
+      {
+        cwd: cacheDir,
+        windowsHide: true,
+        env: {
+          ...process.env,
+          npm_config_cache: CACHE_PATHS.npmCache,
+          NPM_CONFIG_CACHE: CACHE_PATHS.npmCache,
+        },
+      }
+    );
+
+    if (installResult.code !== 0) {
+      const detail = (installResult.stderr || installResult.stdout || "").trim();
+      throw new Error(`缓存工具链安装失败: ${detail || `npm 退出码 ${installResult.code}`}`);
+    }
 
     for (const candidate of cliCandidates) {
       if (await pathExists(candidate)) {
+        onLog(`已完成工具链缓存: ${cacheDir}\n`);
         return candidate;
       }
     }
 
-    const markerPath = path.join(cacheDir, ".ready");
-    if (await pathExists(markerPath)) {
-      return "";
-    }
-
-    const tempDir = path.join(
-      CACHE_PATHS.builderTemp,
-      `toolchain-download-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
-    );
-    const archivePath = path.join(tempDir, "electron-builder.tgz");
-    const extractDir = path.join(tempDir, "extract");
-
-    await fs.mkdir(tempDir, { recursive: true });
-    await fs.mkdir(extractDir, { recursive: true });
-
-    try {
-      onLog(`本地工具链缺失，正在下载 electron-builder@${ELECTRON_BUILDER_VERSION} 到缓存目录...\n`);
-      const metadataUrl = `https://registry.npmjs.org/electron-builder/${ELECTRON_BUILDER_VERSION}`;
-      const metadata = await fetchJsonWithRedirect(metadataUrl);
-      const tarballUrl =
-        metadata && metadata.dist && typeof metadata.dist.tarball === "string"
-          ? metadata.dist.tarball
-          : "";
-
-      if (!tarballUrl) {
-        throw new Error("未获取到 electron-builder tarball 下载地址。");
-      }
-
-      await downloadFileWithRedirect(tarballUrl, archivePath);
-      await tar.x({
-        file: archivePath,
-        cwd: extractDir,
-      });
-
-      const packageRoot = path.join(extractDir, "package");
-      await rmWithRetry(cacheDir, { recursive: true, force: true }).catch(noop);
-      await fs.mkdir(path.dirname(cacheDir), { recursive: true });
-      await fs.cp(packageRoot, cacheDir, { recursive: true, force: true });
-      await fs.writeFile(markerPath, String(Date.now()), "utf-8");
-
-      for (const candidate of cliCandidates) {
-        if (await pathExists(candidate)) {
-          onLog(`已完成工具链缓存: ${cacheDir}\n`);
-          return candidate;
-        }
-      }
-
-      throw new Error("工具链下载完成，但未找到可用 CLI 入口。");
-    } finally {
-      await rmWithRetry(tempDir, { recursive: true, force: true }).catch(noop);
-    }
+    throw new Error("工具链安装完成，但未找到可用 CLI 入口。");
   })();
 
   try {
