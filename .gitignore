@@ -4,6 +4,7 @@ release/
 dist/
 out/
 build/
+vendor/
 win-unpacked/
 
 # Logs

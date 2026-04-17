@@ -93,6 +93,113 @@ function runCommandCapture(command, args, options = {}) {
   });
 }
 
+function resolveBundledBuilderCliPath() {
+  const roots = new Set();
+  roots.add(path.join(process.resourcesPath || "", "embedded", "toolchain", "node_modules"));
+  roots.add(path.join(__dirname, "vendor", "toolchain", "node_modules"));
+
+  const appPath = app.getAppPath();
+  roots.add(path.join(path.dirname(appPath), "embedded", "toolchain", "node_modules"));
+
+  const candidates = [];
+  roots.forEach((root) => {
+    if (!root) {
+      return;
+    }
+    candidates.push(path.join(root, "electron-builder", "cli.js"));
+    candidates.push(path.join(root, "electron-builder", "out", "cli", "cli.js"));
+  });
+
+  for (const candidate of candidates) {
+    if (fssync.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
+function resolveBundledNpmCliPath() {
+  const roots = new Set();
+  roots.add(path.join(process.resourcesPath || "", "embedded", "toolchain", "node_modules"));
+  roots.add(path.join(__dirname, "vendor", "toolchain", "node_modules"));
+
+  const appPath = app.getAppPath();
+  roots.add(path.join(path.dirname(appPath), "embedded", "toolchain", "node_modules"));
+
+  const candidates = [];
+  roots.forEach((root) => {
+    if (!root) {
+      return;
+    }
+    candidates.push(path.join(root, "npm", "bin", "npm-cli.js"));
+  });
+
+  for (const candidate of candidates) {
+    if (fssync.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
+function resolveBuilderPackageRootFromCli(cliPath) {
+  let current = path.dirname(cliPath);
+  for (let depth = 0; depth < 6; depth += 1) {
+    const pkgPath = path.join(current, "package.json");
+    if (fssync.existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(fssync.readFileSync(pkgPath, "utf-8"));
+        if (pkg && pkg.name === "electron-builder") {
+          return current;
+        }
+      } catch (error) {
+        // Ignore parse failure and continue climbing.
+      }
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+
+  return "";
+}
+
+async function restoreCachedBuilderFromBundled(onLog = noop) {
+  const bundledCli = resolveBundledBuilderCliPath();
+  if (!bundledCli) {
+    return "";
+  }
+
+  const bundledPackageRoot = resolveBuilderPackageRootFromCli(bundledCli);
+  if (!bundledPackageRoot) {
+    return "";
+  }
+  const cacheDir = path.join(CACHE_PATHS.toolchainRoot, `electron-builder-${ELECTRON_BUILDER_VERSION}`);
+
+  await rmWithRetry(cacheDir, { recursive: true, force: true }).catch(noop);
+  await fs.mkdir(path.dirname(cacheDir), { recursive: true });
+  await fs.cp(bundledPackageRoot, cacheDir, { recursive: true, force: true });
+
+  const cacheCli = path.join(cacheDir, "cli.js");
+  if (await pathExists(cacheCli)) {
+    onLog(`已从内置工具链恢复缓存: ${cacheDir}\n`);
+    return cacheCli;
+  }
+
+  const cacheCliFallback = path.join(cacheDir, "out", "cli", "cli.js");
+  if (await pathExists(cacheCliFallback)) {
+    onLog(`已从内置工具链恢复缓存: ${cacheDir}\n`);
+    return cacheCliFallback;
+  }
+
+  return "";
+}
+
 function isCachedBuilderComplete(cacheDir) {
   try {
     require.resolve("electron-builder/cli.js", { paths: [cacheDir] });
@@ -125,9 +232,16 @@ async function bootstrapCachedBuilderCli(onLog = noop) {
       }
     }
 
+    const restoredCli = await restoreCachedBuilderFromBundled(onLog);
+    if (restoredCli) {
+      return restoredCli;
+    }
+
     const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-    if (!hasExecutable(npmCommand)) {
-      throw new Error("当前环境未检测到 npm，无法自动安装缓存工具链。");
+    const systemNpmAvailable = hasExecutable(npmCommand);
+    const bundledNpmCli = systemNpmAvailable ? "" : resolveBundledNpmCliPath();
+    if (!systemNpmAvailable && !bundledNpmCli) {
+      throw new Error("当前环境未检测到 npm，且未找到内置 npm-cli，无法自动安装缓存工具链。");
     }
 
     await rmWithRetry(cacheDir, { recursive: true, force: true }).catch(noop);
@@ -149,19 +263,38 @@ async function bootstrapCachedBuilderCli(onLog = noop) {
     );
 
     onLog(`本地工具链缺失，正在下载并安装 electron-builder@${ELECTRON_BUILDER_VERSION} 到缓存目录...\n`);
-    const installResult = await runCommandCapture(
-      npmCommand,
-      ["install", "--no-audit", "--no-fund", "--include=optional"],
-      {
-        cwd: cacheDir,
-        windowsHide: true,
-        env: {
-          ...process.env,
-          npm_config_cache: CACHE_PATHS.npmCache,
-          NPM_CONFIG_CACHE: CACHE_PATHS.npmCache,
-        },
-      }
-    );
+    let installResult;
+    if (systemNpmAvailable) {
+      installResult = await runCommandCapture(
+        npmCommand,
+        ["install", "--no-audit", "--no-fund", "--include=optional"],
+        {
+          cwd: cacheDir,
+          windowsHide: true,
+          env: {
+            ...process.env,
+            npm_config_cache: CACHE_PATHS.npmCache,
+            NPM_CONFIG_CACHE: CACHE_PATHS.npmCache,
+          },
+        }
+      );
+    } else {
+      onLog(`系统 npm 不可用，改用内置 npm-cli: ${bundledNpmCli}\n`);
+      installResult = await runCommandCapture(
+        process.execPath,
+        [bundledNpmCli, "install", "--no-audit", "--no-fund", "--include=optional"],
+        {
+          cwd: cacheDir,
+          windowsHide: true,
+          env: {
+            ...process.env,
+            ELECTRON_RUN_AS_NODE: "1",
+            npm_config_cache: CACHE_PATHS.npmCache,
+            NPM_CONFIG_CACHE: CACHE_PATHS.npmCache,
+          },
+        }
+      );
+    }
 
     if (installResult.code !== 0) {
       const detail = (installResult.stderr || installResult.stdout || "").trim();
@@ -841,6 +974,11 @@ function hasExecutable(command, versionArgs = ["--version"]) {
 }
 
 function resolveLocalBuilderCliPath() {
+  const bundledCli = resolveBundledBuilderCliPath();
+  if (bundledCli) {
+    return bundledCli;
+  }
+
   const candidates = ["electron-builder/cli.js", "electron-builder/out/cli/cli.js"];
   for (const request of candidates) {
     try {
@@ -856,6 +994,7 @@ function resolveLocalBuilderCliPath() {
 async function resolveBuilderLauncher(runtime, onLog = noop) {
   const localBuilderCli = resolveLocalBuilderCliPath();
   if (localBuilderCli) {
+    onLog(`检测到可用 electron-builder CLI: ${localBuilderCli}\n`);
     return {
       source: "local",
       command: runtime.command,

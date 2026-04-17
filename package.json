@@ -4,6 +4,7 @@
   "description": "图形化 Electron 打包器",
   "main": "main.js",
   "scripts": {
+    "prebuild": "node pack-toolchain.js",
     "start": "electron .",
     "dev": "electron .",
     "build": "electron-builder"
@@ -12,11 +13,10 @@
   "author": "",
   "license": "MIT",
   "type": "commonjs",
-  "dependencies": {
-    "electron-builder": "^26.8.1"
-  },
   "devDependencies": {
-    "electron": "^41.2.0"
+    "electron": "^41.2.0",
+    "electron-builder": "^26.8.1",
+    "npm": "^10.9.4"
   },
   "build": {
     "asar": false,
@@ -33,6 +33,12 @@
       "!**/tests/**",
       "!**/*.md",
       "!**/CHANGELOG*"
+    ],
+    "extraResources": [
+      {
+        "from": "vendor/toolchain/node_modules",
+        "to": "embedded/toolchain/node_modules"
+      }
     ],
     "extraMetadata": {
       "main": "main.js"
