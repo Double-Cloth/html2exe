@@ -23,13 +23,14 @@
           <button class="nav-item" data-tab="resources"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg> 文件与资源</button>
         </nav>
         <div class="sidebar-actions">
+          <button id="goOutputPageBtn" type="button" class="primary"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M4 12h16"></path><path d="m14 6 6 6-6 6"></path></svg> 前往输出页面</button>
           <button id="loadProjectDefaultsBtn" type="button" class="secondary"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg> 读取项目信息</button>
           <button id="saveConfigBtn" type="button" class="secondary"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"></path><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"></path><path d="M7 3v4a1 1 0 0 0 1 1h7"></path></svg> 保存当前配置</button>
           <button id="clearCacheBtn" type="button" class="warning"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg> 清理构建缓存</button>
         </div>
       </aside>
 
-      <div class="content-area">
+      <div class="content-area single-panel">
         <section class="panel form-panel">
           <div id="tab-basic" class="tab-content active">
             <div class="section-title">基础路径</div>
@@ -64,6 +65,21 @@
 
           <div id="tab-build" class="tab-content">
             <div class="section-title">构建策略</div>
+            <div class="preset-card">
+              <div class="preset-head">
+                <div class="field-row">
+                  <label for="buildPreset">构建参数预设</label>
+                  <select id="buildPreset">
+                    <option value="release" selected>发布推荐 (默认)</option>
+                    <option value="quick">快速验证 (构建更快)</option>
+                    <option value="compact">体积优先 (包体更小)</option>
+                    <option value="cross">跨平台分发 (多平台)</option>
+                  </select>
+                </div>
+                <button id="applyPresetBtn" type="button" class="secondary">应用预设</button>
+              </div>
+              <p id="presetHint" class="preset-hint">当前预设: 发布推荐。平衡构建速度、兼容性与产物质量。</p>
+            </div>
             <div class="grid three-col">
               <div class="field-row">
                 <label for="compression">代码压缩级别</label>
@@ -99,6 +115,10 @@
                 <label><input id="targetLinux" type="checkbox" /> 🐧 Linux</label>
                 <label><input id="targetMac" type="checkbox" /> 🍎 macOS</label>
               </div>
+            </div>
+            <div class="quick-platform-actions">
+              <button id="chooseHostPlatformBtn" type="button" class="secondary">仅当前系统平台</button>
+              <button id="chooseAllPlatformsBtn" type="button" class="secondary">切换为全平台</button>
             </div>
           </div>
 
@@ -306,33 +326,8 @@ resources/native/**"></textarea>
           </div>
 
           <div class="actions">
-            <div id="actionFeedback" class="action-feedback" aria-live="polite"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1.3.5 2.6 1.5 3.5.8.8 1.3 1.5 1.5 2.5"></path><path d="M9 18h6"></path><path d="M10 22h4"></path></svg> 请完善前面需要的打包配置，准备好后点击开始打包</div>
-            <div class="action-buttons">
-              <button id="cancelBuildBtn" type="button" class="danger" disabled><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><circle cx="12" cy="12" r="10"></circle><rect width="6" height="6" x="9" y="9"></rect></svg> 强行终止</button>
-              <button id="buildBtn" type="button" class="primary btn-large"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"></path><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"></path><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"></path><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"></path></svg> 立即开始打包</button>
-            </div>
+            <div id="actionFeedback" class="action-feedback" aria-live="polite"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1.3.5 2.6 1.5 3.5.8.8 1.3 1.5 1.5 2.5"></path><path d="M9 18h6"></path><path d="M10 22h4"></path></svg> 配置完成后，请点击“前往输出页面”再开始打包并查看日志</div>
           </div>
-        </section>
-
-        <!-- Log Panel -->
-        <section class="panel log-panel">
-          <div class="progress-head">
-            <h2><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="m7.5 4.27 9 5.15"></path><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path><path d="m3.3 7 8.7 5 8.7-5"></path><path d="M12 22V12"></path></svg> 当前构建进度流程</h2>
-            <span id="overallStatus" class="overall-status idle">处于闲置状态中</span>
-          </div>
-          <div id="buildSteps" class="build-steps">
-            <div class="step-item" data-step="prepare"><span class="dot"></span><span class="title">核对与预清理</span><span class="detail">尚未开始</span></div>
-            <div class="step-item" data-step="temp-project"><span class="dot"></span><span class="title">预备临时打包环境</span><span class="detail">按需执行</span></div>
-            <div class="step-item" data-step="install"><span class="dot"></span><span class="title">加载必要依赖库</span><span class="detail">进度未分配</span></div>
-            <div class="step-item" data-step="package"><span class="dot"></span><span class="title">外壳应用与配置固化</span><span class="detail">计划中</span></div>
-            <div class="step-item" data-step="artifact"><span class="dot"></span><span class="title">组装最终安全向导程序</span><span class="detail">稍后分配</span></div>
-            <div class="step-item" data-step="complete"><span class="dot"></span><span class="title">生成输出构建报告</span><span class="detail">等待前面完成</span></div>
-          </div>
-          <div class="log-head">
-            <h2><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" x2="8" y1="13" y2="13"></line><line x1="16" x2="8" y1="17" y2="17"></line><line x1="10" x2="8" y1="9" y2="9"></line></svg> 实时终端日志输出报告</h2>
-            <button id="clearLogBtn" type="button" class="small-btn">清空历史日志展示</button>
-          </div>
-          <pre id="logOutput">打包器已就绪待命中，随时候命...</pre>
         </section>
       </div>
     </main>

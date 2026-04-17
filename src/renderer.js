@@ -8,6 +8,7 @@ const formFieldIds = [
   "version",
   "author",
   "description",
+  "buildPreset",
   "compression",
   "arches",
   "asar",
@@ -46,6 +47,8 @@ const formFieldIds = [
 ];
 
 const dom = {
+  goOutputPageBtn: document.getElementById("goOutputPageBtn"),
+  goConfigPageBtn: document.getElementById("goConfigPageBtn"),
   buildBtn: document.getElementById("buildBtn"),
   cancelBuildBtn: document.getElementById("cancelBuildBtn"),
   saveConfigBtn: document.getElementById("saveConfigBtn"),
@@ -57,10 +60,93 @@ const dom = {
   pickWinIconBtn: document.getElementById("pickWinIconBtn"),
   pickLinuxIconBtn: document.getElementById("pickLinuxIconBtn"),
   pickMacIconBtn: document.getElementById("pickMacIconBtn"),
+  buildPreset: document.getElementById("buildPreset"),
+  applyPresetBtn: document.getElementById("applyPresetBtn"),
+  presetHint: document.getElementById("presetHint"),
+  chooseHostPlatformBtn: document.getElementById("chooseHostPlatformBtn"),
+  chooseAllPlatformsBtn: document.getElementById("chooseAllPlatformsBtn"),
+  targetWindows: document.getElementById("targetWindows"),
+  targetLinux: document.getElementById("targetLinux"),
+  targetMac: document.getElementById("targetMac"),
+  winTargets: document.getElementById("winTargets"),
+  linuxTargets: document.getElementById("linuxTargets"),
+  macTargets: document.getElementById("macTargets"),
+  winPortable: document.getElementById("winPortable"),
   logOutput: document.getElementById("logOutput"),
   overallStatus: document.getElementById("overallStatus"),
   buildSteps: document.getElementById("buildSteps"),
   actionFeedback: document.getElementById("actionFeedback"),
+};
+
+const BUILD_PRESETS = {
+  release: {
+    label: "发布推荐",
+    hint: "平衡构建速度、兼容性与产物质量，适合多数正式发布场景。",
+    values: {
+      compression: "normal",
+      arches: "x64",
+      asar: true,
+      npmRebuild: true,
+      targetWindows: true,
+      targetLinux: false,
+      targetMac: false,
+      winTargets: "nsis",
+      winPortable: false,
+      linuxTargets: "AppImage",
+      macTargets: "dmg",
+    },
+  },
+  quick: {
+    label: "快速验证",
+    hint: "优先缩短打包耗时，适合开发测试和冒烟验证。",
+    values: {
+      compression: "store",
+      arches: "x64",
+      asar: true,
+      npmRebuild: false,
+      targetWindows: true,
+      targetLinux: false,
+      targetMac: false,
+      winTargets: "portable",
+      winPortable: true,
+      linuxTargets: "AppImage",
+      macTargets: "dmg",
+    },
+  },
+  compact: {
+    label: "体积优先",
+    hint: "尽量减小包体积，构建时间会相对更长。",
+    values: {
+      compression: "maximum",
+      arches: "x64",
+      asar: true,
+      npmRebuild: true,
+      targetWindows: true,
+      targetLinux: false,
+      targetMac: false,
+      winTargets: "nsis",
+      winPortable: false,
+      linuxTargets: "AppImage",
+      macTargets: "dmg",
+    },
+  },
+  cross: {
+    label: "跨平台分发",
+    hint: "一次生成多平台目标，适合内部测试与统一验收。",
+    values: {
+      compression: "normal",
+      arches: "x64, arm64",
+      asar: true,
+      npmRebuild: true,
+      targetWindows: true,
+      targetLinux: true,
+      targetMac: true,
+      winTargets: "nsis, zip",
+      winPortable: false,
+      linuxTargets: "AppImage, deb",
+      macTargets: "dmg, zip",
+    },
+  },
 };
 
 let isBuilding = false;
@@ -120,6 +206,9 @@ function setButtonBusy(button, busy, busyText, idleText) {
 }
 
 function appendLog(line, kind = "normal") {
+  if (!dom.logOutput) {
+    return;
+  }
   const stamp = new Date().toLocaleTimeString("zh-CN", { hour12: false });
   if (dom.logOutput.textContent === "等待开始...") {
     dom.logOutput.textContent = "";
@@ -241,6 +330,9 @@ function applyStateToForm(state) {
       el.value = state[id] ?? "";
     }
   }
+
+  syncTargetDependentControls();
+  setPresetHint((state && state.buildPreset) || "release");
 }
 
 function applyDefaultsToForm(defaults) {
@@ -269,6 +361,87 @@ function applyDefaultsToForm(defaults) {
       el.value = String(value);
     }
   });
+
+  syncTargetDependentControls();
+}
+
+function getCurrentHostTargetKey() {
+  const platform = (navigator.platform || "").toLowerCase();
+  if (platform.includes("mac")) {
+    return "targetMac";
+  }
+  if (platform.includes("linux")) {
+    return "targetLinux";
+  }
+  return "targetWindows";
+}
+
+function setPresetHint(presetKey) {
+  if (!dom.presetHint) {
+    return;
+  }
+  const preset = BUILD_PRESETS[presetKey] || BUILD_PRESETS.release;
+  dom.presetHint.textContent = `当前预设: ${preset.label}。${preset.hint}`;
+}
+
+function syncTargetDependentControls() {
+  const targetRows = [
+    { checkedEl: dom.targetWindows, controls: [dom.winTargets, dom.winPortable] },
+    { checkedEl: dom.targetLinux, controls: [dom.linuxTargets] },
+    { checkedEl: dom.targetMac, controls: [dom.macTargets] },
+  ];
+
+  targetRows.forEach(({ checkedEl, controls }) => {
+    if (!checkedEl) {
+      return;
+    }
+    const enabled = checkedEl.checked;
+    controls.forEach((el) => {
+      if (!el) {
+        return;
+      }
+      el.disabled = !enabled;
+      el.classList.toggle("disabled-by-target", !enabled);
+    });
+  });
+}
+
+function applyBuildPreset(presetKey, source = "manual") {
+  const preset = BUILD_PRESETS[presetKey] || BUILD_PRESETS.release;
+  const values = preset.values;
+
+  Object.entries(values).forEach(([id, value]) => {
+    const el = document.getElementById(id);
+    if (!el) {
+      return;
+    }
+    if (el.type === "checkbox") {
+      el.checked = Boolean(value);
+      return;
+    }
+    el.value = String(value);
+  });
+
+  if (dom.buildPreset) {
+    dom.buildPreset.value = presetKey;
+  }
+  syncTargetDependentControls();
+  setPresetHint(presetKey);
+
+  if (source === "manual") {
+    setActionFeedback(`已应用「${preset.label}」参数预设。`, "success", 2200);
+    appendLog(`已应用构建预设: ${preset.label}`, "ok");
+  }
+}
+
+function parseArches(raw) {
+  if (!raw) {
+    return [];
+  }
+  return raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function isSemverLike(version) {
@@ -311,6 +484,24 @@ function validateBeforeBuild(payload) {
   if (invalidArches.length > 0) {
     return `架构参数无效: ${invalidArches.join(", ")}。可选 x64, arm64, ia32, armv7l, universal。`;
   }
+
+  const archList = parseArches(payload.arches);
+  if (
+    archList.includes("universal") &&
+    (payload.targetWindows || payload.targetLinux)
+  ) {
+    return "universal 仅适用于 macOS。选择 universal 时请只勾选 macOS，或改为 x64/arm64。";
+  }
+  if (payload.targetMac && (archList.includes("ia32") || archList.includes("armv7l"))) {
+    return "macOS 不支持 ia32 或 armv7l 架构，请改为 x64、arm64 或 universal。";
+  }
+  if (payload.targetWindows && archList.includes("armv7l")) {
+    return "Windows 目标不支持 armv7l，请改为 x64、arm64 或 ia32。";
+  }
+  if (payload.targetLinux && archList.includes("universal")) {
+    return "Linux 目标不支持 universal，请改为 x64、arm64 或 armv7l。";
+  }
+
   if (!isPositiveIntLike(payload.windowWidth)) {
     return "窗口宽度必须是正整数，例如 1280。";
   }
@@ -322,25 +513,38 @@ function validateBeforeBuild(payload) {
 
 function updateBuildState(next) {
   isBuilding = next;
-  dom.cancelBuildBtn.disabled = !next;
-  dom.buildBtn.disabled = next;
+  if (dom.cancelBuildBtn) {
+    dom.cancelBuildBtn.disabled = !next;
+  }
+  if (dom.buildBtn) {
+    dom.buildBtn.disabled = next;
+  }
 }
 
 function setFormBusy(busy) {
+  const setDisabled = (el, nextBusy) => {
+    if (el) {
+      el.disabled = nextBusy;
+    }
+  };
+
   formFieldIds.forEach((id) => {
     const el = document.getElementById(id);
     if (el) {
       el.disabled = busy;
     }
   });
-  dom.loadProjectDefaultsBtn.disabled = busy;
-  dom.pickProjectBtn.disabled = busy;
-  dom.pickOutputBtn.disabled = busy;
-  dom.pickWinIconBtn.disabled = busy;
-  dom.pickLinuxIconBtn.disabled = busy;
-  dom.pickMacIconBtn.disabled = busy;
-  dom.saveConfigBtn.disabled = busy;
-  dom.clearCacheBtn.disabled = busy;
+  setDisabled(dom.loadProjectDefaultsBtn, busy);
+  setDisabled(dom.pickProjectBtn, busy);
+  setDisabled(dom.pickOutputBtn, busy);
+  setDisabled(dom.pickWinIconBtn, busy);
+  setDisabled(dom.pickLinuxIconBtn, busy);
+  setDisabled(dom.pickMacIconBtn, busy);
+  setDisabled(dom.saveConfigBtn, busy);
+  setDisabled(dom.clearCacheBtn, busy);
+  if (dom.goOutputPageBtn) {
+    dom.goOutputPageBtn.disabled = busy;
+  }
   updateBuildState(busy);
 }
 
@@ -354,7 +558,8 @@ async function pickDirectory(targetInputId, picker) {
 }
 
 async function loadProjectDefaults() {
-  const projectDir = document.getElementById("projectDir").value.trim();
+  const projectInput = document.getElementById("projectDir");
+  const projectDir = projectInput ? projectInput.value.trim() : "";
   if (!projectDir) {
     setActionFeedback("读取项目信息前，请先选择项目目录。", "error", 2200);
     appendLog("请先选择项目目录，再读取项目信息。", "error");
@@ -392,7 +597,10 @@ async function pickIcon(targetInputId, allowedExt) {
   if (!icon) {
     return;
   }
-  document.getElementById(targetInputId).value = icon;
+  const target = document.getElementById(targetInputId);
+  if (target) {
+    target.value = icon;
+  }
 }
 
 async function saveConfig() {
@@ -415,7 +623,11 @@ async function runBuild() {
     return;
   }
 
-  const payload = gatherFormState();
+  let payload = gatherFormState();
+  if (!payload.projectDir) {
+    const saved = await window.builderApi.loadSettings();
+    payload = { ...saved };
+  }
   const invalidMessage = validateBeforeBuild(payload);
   if (invalidMessage) {
     setActionFeedback(invalidMessage, "error", 2800);
@@ -529,8 +741,20 @@ async function clearCache() {
 }
 
 async function init() {
+  const isConfigPage = Boolean(document.getElementById("tab-basic"));
+  const isOutputPage = Boolean(dom.logOutput);
+
   const saved = await window.builderApi.loadSettings();
-  applyStateToForm(saved);
+  if (isConfigPage) {
+    applyStateToForm(saved);
+    const presetFromSaved = saved && saved.buildPreset ? saved.buildPreset : "release";
+    if (!saved || !saved.compression) {
+      applyBuildPreset(presetFromSaved, "initial");
+    } else {
+      setPresetHint(presetFromSaved);
+      syncTargetDependentControls();
+    }
+  }
   resetProgressView();
   setActionFeedback("准备就绪。", "success", 1500);
 
@@ -542,65 +766,161 @@ async function init() {
     applyStatusPayload(payload);
   });
 
-  dom.pickProjectBtn.addEventListener("click", () => {
-    pickDirectory("projectDir", window.builderApi.pickProjectDir).then(() => {
-      loadProjectDefaults().catch((error) => {
-        appendLog(`读取项目信息失败: ${error.message}`, "error");
+  if (dom.pickProjectBtn) {
+    dom.pickProjectBtn.addEventListener("click", () => {
+      pickDirectory("projectDir", window.builderApi.pickProjectDir).then(() => {
+        loadProjectDefaults().catch((error) => {
+          appendLog(`读取项目信息失败: ${error.message}`, "error");
+        });
       });
     });
-  });
+  }
 
-  dom.pickOutputBtn.addEventListener("click", () => {
-    pickDirectory("outputDir", window.builderApi.pickOutputDir);
-  });
+  if (dom.pickOutputBtn) {
+    dom.pickOutputBtn.addEventListener("click", () => {
+      pickDirectory("outputDir", window.builderApi.pickOutputDir);
+    });
+  }
 
-  dom.pickWinIconBtn.addEventListener("click", () => {
-    pickIcon("winIcon", ["ico", "png"]);
-  });
+  if (dom.pickWinIconBtn) {
+    dom.pickWinIconBtn.addEventListener("click", () => {
+      pickIcon("winIcon", ["ico", "png"]);
+    });
+  }
 
-  dom.pickLinuxIconBtn.addEventListener("click", () => {
-    pickIcon("linuxIcon", ["png", "svg"]);
-  });
+  if (dom.pickLinuxIconBtn) {
+    dom.pickLinuxIconBtn.addEventListener("click", () => {
+      pickIcon("linuxIcon", ["png", "svg"]);
+    });
+  }
 
-  dom.pickMacIconBtn.addEventListener("click", () => {
-    pickIcon("macIcon", ["icns", "png"]);
-  });
+  if (dom.pickMacIconBtn) {
+    dom.pickMacIconBtn.addEventListener("click", () => {
+      pickIcon("macIcon", ["icns", "png"]);
+    });
+  }
 
-  dom.saveConfigBtn.addEventListener("click", async () => {
-    try {
-      await saveConfig();
-    } catch (error) {
-      appendLog(`保存失败: ${error.message}`, "error");
+  if (dom.applyPresetBtn) {
+    dom.applyPresetBtn.addEventListener("click", () => {
+      const presetKey = dom.buildPreset ? dom.buildPreset.value : "release";
+      applyBuildPreset(presetKey, "manual");
+    });
+  }
+
+  if (dom.buildPreset) {
+    dom.buildPreset.addEventListener("change", () => {
+      setPresetHint(dom.buildPreset.value);
+    });
+  }
+
+  if (dom.chooseHostPlatformBtn) {
+    dom.chooseHostPlatformBtn.addEventListener("click", () => {
+      const hostKey = getCurrentHostTargetKey();
+      if (dom.targetWindows) {
+        dom.targetWindows.checked = hostKey === "targetWindows";
+      }
+      if (dom.targetLinux) {
+        dom.targetLinux.checked = hostKey === "targetLinux";
+      }
+      if (dom.targetMac) {
+        dom.targetMac.checked = hostKey === "targetMac";
+      }
+      syncTargetDependentControls();
+      setActionFeedback("已切换为仅当前系统平台。", "success", 2000);
+    });
+  }
+
+  if (dom.chooseAllPlatformsBtn) {
+    dom.chooseAllPlatformsBtn.addEventListener("click", () => {
+      if (dom.targetWindows) {
+        dom.targetWindows.checked = true;
+      }
+      if (dom.targetLinux) {
+        dom.targetLinux.checked = true;
+      }
+      if (dom.targetMac) {
+        dom.targetMac.checked = true;
+      }
+      syncTargetDependentControls();
+      setActionFeedback("已切换为全平台构建。", "success", 2000);
+    });
+  }
+
+  [dom.targetWindows, dom.targetLinux, dom.targetMac].forEach((el) => {
+    if (!el) {
+      return;
     }
-  });
-
-  dom.loadProjectDefaultsBtn.addEventListener("click", async () => {
-    try {
-      await loadProjectDefaults();
-    } catch (error) {
-      appendLog(`读取项目信息失败: ${error.message}`, "error");
-    }
-  });
-
-  dom.clearCacheBtn.addEventListener("click", () => {
-    clearCache().catch((error) => {
-      appendLog(`清理缓存失败: ${error.message}`, "error");
+    el.addEventListener("change", () => {
+      syncTargetDependentControls();
     });
   });
 
-  dom.buildBtn.addEventListener("click", runBuild);
-  dom.cancelBuildBtn.addEventListener("click", () => {
-    cancelBuild().catch((error) => {
-      appendLog(`取消失败: ${error.message}`, "error");
+  if (dom.saveConfigBtn) {
+    dom.saveConfigBtn.addEventListener("click", async () => {
+      try {
+        await saveConfig();
+      } catch (error) {
+        appendLog(`保存失败: ${error.message}`, "error");
+      }
     });
-  });
+  }
 
-  dom.clearLogBtn.addEventListener("click", () => {
-    dom.logOutput.textContent = "等待开始...";
-    dom.logOutput.classList.remove("status-error", "status-ok");
-    resetProgressView();
-    setActionFeedback("日志已清空。", "success", 1400);
-  });
+  if (dom.loadProjectDefaultsBtn) {
+    dom.loadProjectDefaultsBtn.addEventListener("click", async () => {
+      try {
+        await loadProjectDefaults();
+      } catch (error) {
+        appendLog(`读取项目信息失败: ${error.message}`, "error");
+      }
+    });
+  }
+
+  if (dom.clearCacheBtn) {
+    dom.clearCacheBtn.addEventListener("click", () => {
+      clearCache().catch((error) => {
+        appendLog(`清理缓存失败: ${error.message}`, "error");
+      });
+    });
+  }
+
+  if (dom.buildBtn && isOutputPage) {
+    dom.buildBtn.addEventListener("click", runBuild);
+  }
+
+  if (dom.cancelBuildBtn && isOutputPage) {
+    dom.cancelBuildBtn.addEventListener("click", () => {
+      cancelBuild().catch((error) => {
+        appendLog(`取消失败: ${error.message}`, "error");
+      });
+    });
+  }
+
+  if (dom.clearLogBtn && dom.logOutput) {
+    dom.clearLogBtn.addEventListener("click", () => {
+      dom.logOutput.textContent = "等待开始...";
+      dom.logOutput.classList.remove("status-error", "status-ok");
+      resetProgressView();
+      setActionFeedback("日志已清空。", "success", 1400);
+    });
+  }
+
+  if (dom.goOutputPageBtn) {
+    dom.goOutputPageBtn.addEventListener("click", async () => {
+      try {
+        await saveConfig();
+      } catch (error) {
+        appendLog(`自动保存失败: ${error.message}`, "error");
+      } finally {
+        window.location.href = "./output.html";
+      }
+    });
+  }
+
+  if (dom.goConfigPageBtn) {
+    dom.goConfigPageBtn.addEventListener("click", () => {
+      window.location.href = "./index.html";
+    });
+  }
 }
 
 init().catch((error) => {
@@ -631,5 +951,7 @@ function initTabs() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  initTabs();
+  if (document.querySelector('.nav-item[data-tab]')) {
+    initTabs();
+  }
 });

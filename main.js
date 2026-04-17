@@ -18,7 +18,7 @@ const fs = require("node:fs/promises");
 const fssync = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 
 const SETTINGS_FILE_NAME = "builder-settings.json";
 const LOCAL_CACHE_ROOT = path.join(__dirname, ".cache");
@@ -530,8 +530,77 @@ function uniqueLines(lines) {
   return Array.from(new Set(lines.filter(Boolean)));
 }
 
+function toPosixLowerPath(inputPath) {
+  return toPosixPath(inputPath).toLowerCase();
+}
+
+function isPathInside(parentPath, childPath) {
+  const relativePath = path.relative(parentPath, childPath);
+  return Boolean(relativePath) && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
+}
+
+function shouldSkipHtmlCopyPath(sourceDir, outputDir, currentPath) {
+  const normalizedCurrent = toPosixLowerPath(currentPath);
+  const relativePath = path.relative(sourceDir, currentPath);
+
+  if (!relativePath || relativePath === ".") {
+    return false;
+  }
+
+  const normalizedSegments = relativePath
+    .split(path.sep)
+    .map((segment) => String(segment || "").toLowerCase())
+    .filter(Boolean);
+
+  if (normalizedSegments.includes("node_modules") || normalizedSegments.includes(".git")) {
+    return true;
+  }
+
+  if (normalizedCurrent.includes("/win-unpacked/") || normalizedCurrent.endsWith("/win-unpacked")) {
+    return true;
+  }
+  if (normalizedCurrent.includes("/app.asar.unpacked/") || normalizedCurrent.endsWith("/app.asar.unpacked")) {
+    return true;
+  }
+  if (normalizedCurrent.includes("/release/") || normalizedCurrent.endsWith("/release")) {
+    return true;
+  }
+  if (normalizedCurrent.includes("/dist/") || normalizedCurrent.endsWith("/dist")) {
+    return true;
+  }
+  if (normalizedCurrent.includes("/out/") || normalizedCurrent.endsWith("/out")) {
+    return true;
+  }
+
+  if (isPathInside(sourceDir, outputDir)) {
+    const outputRelative = path.relative(sourceDir, outputDir);
+    const outputSegments = outputRelative
+      .split(path.sep)
+      .map((segment) => String(segment || "").toLowerCase())
+      .filter(Boolean);
+
+    if (
+      outputSegments.length > 0 &&
+      outputSegments.every((segment, index) => normalizedSegments[index] === segment)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function normalizeHtmlOnlyFilesGlobs(raw) {
-  const required = ["main.js", "package.json", "app-source/**", "!release/**"];
+  const required = [
+    "main.js",
+    "package.json",
+    "app-source/**",
+    "!release/**",
+    "!dist/**",
+    "!out/**",
+    "!**/win-unpacked/**",
+    "!**/app.asar.unpacked/**",
+  ];
   const userLines = parseLines(raw).filter((line) => !line.startsWith("!"));
 
   if (userLines.length === 0) {
@@ -569,6 +638,25 @@ function parsePositiveInt(raw, fallback) {
     return value;
   }
   return fallback;
+}
+
+function resolveBuilderRuntime() {
+  const probe = spawnSync("node", ["--version"], {
+    windowsHide: true,
+    encoding: "utf-8",
+  });
+
+  if (probe.status === 0) {
+    return {
+      command: "node",
+      mode: "node",
+    };
+  }
+
+  return {
+    command: process.execPath,
+    mode: "electron-node",
+  };
 }
 
 function getGeneratedWindowOptions(form) {
@@ -909,7 +997,6 @@ async function prepareWorkspaceForBuild(form, onLog, onStatus = noop) {
   );
   const appSourceDir = path.join(tempProjectDir, "app-source");
   await fs.mkdir(appSourceDir, { recursive: true });
-  await fs.cp(sourceDir, appSourceDir, { recursive: true, force: true });
 
   const windowOptions = getGeneratedWindowOptions(form);
   const mainJs = `const { app, BrowserWindow } = require("electron");\nconst path = require("node:path");\n\nconst WINDOW_OPTIONS = ${JSON.stringify(
@@ -951,6 +1038,12 @@ async function prepareWorkspaceForBuild(form, onLog, onStatus = noop) {
     ? requestedOutputDir
     : path.resolve(sourceDir, requestedOutputDir);
   onLog(`纯 HTML 模式产物输出目录: ${resolvedOutputDir}\n`);
+
+  await fs.cp(sourceDir, appSourceDir, {
+    recursive: true,
+    force: true,
+    filter: (src) => !shouldSkipHtmlCopyPath(sourceDir, resolvedOutputDir, src),
+  });
 
   return {
     projectDir: tempProjectDir,
@@ -1002,39 +1095,38 @@ async function runBuild(form, onLog, onStatus = noop) {
   );
   await fs.writeFile(tempConfigPath, JSON.stringify(config, null, 2), "utf-8");
 
-  const localBuilderCli = path.join(
-    __dirname,
-    "node_modules",
-    "electron-builder",
-    "cli.js"
-  );
-
-  let cli;
-  let args;
-  let useLocalBuilder = false;
-  if (fssync.existsSync(localBuilderCli)) {
-    cli = process.platform === "win32" ? "npx.cmd" : "npx";
-    args = [
-      "--no-install",
-      "electron-builder",
-      "--projectDir",
-      buildProjectDir,
-      "--config",
-      tempConfigPath,
-    ];
-    useLocalBuilder = true;
-  } else {
-    cli = process.platform === "win32" ? "npx.cmd" : "npx";
-    args = [
-      "electron-builder",
-      "--projectDir",
-      buildProjectDir,
-      "--config",
-      tempConfigPath,
-    ];
+  let localBuilderCli;
+  try {
+    localBuilderCli = require.resolve("electron-builder/cli.js");
+  } catch (error) {
+    throw new Error("未找到本地 electron-builder CLI，请确认依赖已安装。");
   }
 
-  onLog(`执行命令: ${cli} ${args.join(" ")}\n`);
+  const args = [
+    "build",
+    "--projectDir",
+    buildProjectDir,
+    "--config",
+    tempConfigPath,
+  ];
+  const runtime = resolveBuilderRuntime();
+
+  const childEnv = {
+    ...process.env,
+    TEMP: CACHE_PATHS.appTemp,
+    TMP: CACHE_PATHS.appTemp,
+    TMPDIR: CACHE_PATHS.appTemp,
+    XDG_CACHE_HOME: LOCAL_CACHE_ROOT,
+    EBUILDER_CACHE: CACHE_PATHS.builderCache,
+    ELECTRON_BUILDER_CACHE: CACHE_PATHS.builderCache,
+    ELECTRON_CACHE: CACHE_PATHS.electronDownloadCache,
+    npm_config_cache: CACHE_PATHS.npmCache,
+    NPM_CONFIG_CACHE: CACHE_PATHS.npmCache,
+  };
+
+  if (runtime.mode === "electron-node") {
+    childEnv.ELECTRON_RUN_AS_NODE = "1";
+  }
 
   for (const arch of parseArchFlags(normalizedForm.arches)) {
     args.push(`--${arch}`);
@@ -1057,30 +1149,20 @@ async function runBuild(form, onLog, onStatus = noop) {
     onLog("未选择平台，electron-builder 将使用项目默认配置。\n");
   }
 
-  if (useLocalBuilder) {
-    onLog("检测到本地 electron-builder，已通过 npx --no-install 调用。\n");
-  }
+  onLog(`执行命令: ${runtime.command} ${localBuilderCli} ${args.join(" ")}\n`);
+
+  onLog(`检测到本地 electron-builder，已通过 ${runtime.mode} runtime 调用。\n`);
 
   return new Promise((resolve, reject) => {
-    const childEnv = {
-      ...process.env,
-      TEMP: CACHE_PATHS.appTemp,
-      TMP: CACHE_PATHS.appTemp,
-      TMPDIR: CACHE_PATHS.appTemp,
-      XDG_CACHE_HOME: LOCAL_CACHE_ROOT,
-      EBUILDER_CACHE: CACHE_PATHS.builderCache,
-      ELECTRON_BUILDER_CACHE: CACHE_PATHS.builderCache,
-      ELECTRON_CACHE: CACHE_PATHS.electronDownloadCache,
-      npm_config_cache: CACHE_PATHS.npmCache,
-      NPM_CONFIG_CACHE: CACHE_PATHS.npmCache,
-    };
-
-    const child = spawn(cli, args, {
-      cwd: buildProjectDir,
-      env: childEnv,
-      shell: process.platform === "win32",
-      windowsHide: true,
-    });
+    const child = spawn(
+      runtime.command,
+      [localBuilderCli, ...args],
+      {
+        cwd: buildProjectDir,
+        env: childEnv,
+        stdio: "pipe",
+      }
+    );
 
     const session = {
       child,
