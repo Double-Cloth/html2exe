@@ -865,6 +865,7 @@ async function resolveBuilderLauncher(runtime, onLog = noop) {
     };
   }
 
+  let cacheBootstrapError = "";
   try {
     const cachedBuilderCli = await bootstrapCachedBuilderCli(onLog);
     if (cachedBuilderCli) {
@@ -877,7 +878,8 @@ async function resolveBuilderLauncher(runtime, onLog = noop) {
       };
     }
   } catch (error) {
-    onLog(`缓存工具链初始化失败，将尝试 npx/npm 兜底: ${error.message}\n`);
+    cacheBootstrapError = error && error.message ? error.message : String(error || "未知错误");
+    onLog(`缓存工具链初始化失败，将尝试 npx/npm 兜底: ${cacheBootstrapError}\n`);
   }
 
   const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
@@ -909,8 +911,11 @@ async function resolveBuilderLauncher(runtime, onLog = noop) {
     };
   }
 
+  const cacheHint = cacheBootstrapError
+    ? ` 缓存工具链失败原因: ${cacheBootstrapError}`
+    : "";
   throw new Error(
-    "未找到可用的 electron-builder 入口（本地 CLI / npx / npm exec）。请安装 Node.js 并确保 electron-builder 可用。"
+    `未找到可用的 electron-builder 入口（本地 CLI / 缓存工具链 / npx / npm exec）。请安装 Node.js（含 npm）或使用内置 electron-builder 重新打包本工具后再试。${cacheHint}`
   );
 }
 
