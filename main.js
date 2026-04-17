@@ -18,9 +18,14 @@ const fs = require("node:fs/promises");
 const fssync = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
+const http = require("node:http");
+const https = require("node:https");
+const { pipeline } = require("node:stream/promises");
 const { spawn, spawnSync } = require("node:child_process");
+const tar = require("tar");
 
 const SETTINGS_FILE_NAME = "builder-settings.json";
+const ELECTRON_BUILDER_VERSION = "26.8.1";
 const LOCAL_CACHE_ROOT = app.isPackaged
   ? path.join(app.getPath("appData"), app.getName() || "html2exe", ".cache")
   : path.join(__dirname, ".cache");
@@ -40,12 +45,208 @@ const CACHE_PATHS = {
   builderCache: path.join(LOCAL_CACHE_ROOT, "builder", "cache"),
   electronDownloadCache: path.join(LOCAL_CACHE_ROOT, "builder", "electron-download"),
   npmCache: path.join(LOCAL_CACHE_ROOT, "builder", "npm-cache"),
+  toolchainRoot: path.join(LOCAL_CACHE_ROOT, "builder", "toolchain"),
 };
+
+let cachedBuilderBootstrapPromise = null;
 
 function ensureLocalCacheDirs() {
   Object.values(CACHE_PATHS).forEach((dir) => {
     fssync.mkdirSync(dir, { recursive: true });
   });
+}
+
+async function pathExists(targetPath) {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+function getHttpClient(url) {
+  return String(url || "").startsWith("https:") ? https : http;
+}
+
+async function downloadFileWithRedirect(url, outputPath, redirectDepth = 0) {
+  if (redirectDepth > 5) {
+    throw new Error("工具链下载重定向次数过多。");
+  }
+
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+
+  await new Promise((resolve, reject) => {
+    const client = getHttpClient(url);
+    const request = client.get(
+      url,
+      {
+        headers: {
+          Accept: "application/json,application/octet-stream,*/*",
+          "User-Agent": "html2exe-toolchain-bootstrap/1.0",
+        },
+      },
+      async (response) => {
+        const { statusCode = 0, headers = {} } = response;
+
+        if (statusCode >= 300 && statusCode < 400 && headers.location) {
+          response.resume();
+          try {
+            const redirectedUrl = new URL(headers.location, url).toString();
+            await downloadFileWithRedirect(redirectedUrl, outputPath, redirectDepth + 1);
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+          return;
+        }
+
+        if (statusCode < 200 || statusCode >= 300) {
+          response.resume();
+          reject(new Error(`工具链下载失败，HTTP ${statusCode}`));
+          return;
+        }
+
+        const fileStream = fssync.createWriteStream(outputPath);
+        try {
+          await pipeline(response, fileStream);
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      }
+    );
+
+    request.on("error", reject);
+  });
+}
+
+async function fetchJsonWithRedirect(url, redirectDepth = 0) {
+  if (redirectDepth > 5) {
+    throw new Error("工具链元数据重定向次数过多。");
+  }
+
+  return new Promise((resolve, reject) => {
+    const client = getHttpClient(url);
+    const request = client.get(
+      url,
+      {
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "html2exe-toolchain-bootstrap/1.0",
+        },
+      },
+      (response) => {
+        const { statusCode = 0, headers = {} } = response;
+
+        if (statusCode >= 300 && statusCode < 400 && headers.location) {
+          response.resume();
+          const redirectedUrl = new URL(headers.location, url).toString();
+          fetchJsonWithRedirect(redirectedUrl, redirectDepth + 1).then(resolve).catch(reject);
+          return;
+        }
+
+        if (statusCode < 200 || statusCode >= 300) {
+          response.resume();
+          reject(new Error(`获取工具链元数据失败，HTTP ${statusCode}`));
+          return;
+        }
+
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("end", () => {
+          try {
+            const content = Buffer.concat(chunks).toString("utf-8");
+            resolve(JSON.parse(content));
+          } catch (error) {
+            reject(new Error(`工具链元数据解析失败: ${error.message}`));
+          }
+        });
+      }
+    );
+
+    request.on("error", reject);
+  });
+}
+
+async function bootstrapCachedBuilderCli(onLog = noop) {
+  if (cachedBuilderBootstrapPromise) {
+    return cachedBuilderBootstrapPromise;
+  }
+
+  cachedBuilderBootstrapPromise = (async () => {
+    const cacheDir = path.join(CACHE_PATHS.toolchainRoot, `electron-builder-${ELECTRON_BUILDER_VERSION}`);
+    const cliCandidates = [
+      path.join(cacheDir, "cli.js"),
+      path.join(cacheDir, "out", "cli", "cli.js"),
+    ];
+
+    for (const candidate of cliCandidates) {
+      if (await pathExists(candidate)) {
+        return candidate;
+      }
+    }
+
+    const markerPath = path.join(cacheDir, ".ready");
+    if (await pathExists(markerPath)) {
+      return "";
+    }
+
+    const tempDir = path.join(
+      CACHE_PATHS.builderTemp,
+      `toolchain-download-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+    );
+    const archivePath = path.join(tempDir, "electron-builder.tgz");
+    const extractDir = path.join(tempDir, "extract");
+
+    await fs.mkdir(tempDir, { recursive: true });
+    await fs.mkdir(extractDir, { recursive: true });
+
+    try {
+      onLog(`本地工具链缺失，正在下载 electron-builder@${ELECTRON_BUILDER_VERSION} 到缓存目录...\n`);
+      const metadataUrl = `https://registry.npmjs.org/electron-builder/${ELECTRON_BUILDER_VERSION}`;
+      const metadata = await fetchJsonWithRedirect(metadataUrl);
+      const tarballUrl =
+        metadata && metadata.dist && typeof metadata.dist.tarball === "string"
+          ? metadata.dist.tarball
+          : "";
+
+      if (!tarballUrl) {
+        throw new Error("未获取到 electron-builder tarball 下载地址。");
+      }
+
+      await downloadFileWithRedirect(tarballUrl, archivePath);
+      await tar.x({
+        file: archivePath,
+        cwd: extractDir,
+      });
+
+      const packageRoot = path.join(extractDir, "package");
+      await rmWithRetry(cacheDir, { recursive: true, force: true }).catch(noop);
+      await fs.mkdir(path.dirname(cacheDir), { recursive: true });
+      await fs.cp(packageRoot, cacheDir, { recursive: true, force: true });
+      await fs.writeFile(markerPath, String(Date.now()), "utf-8");
+
+      for (const candidate of cliCandidates) {
+        if (await pathExists(candidate)) {
+          onLog(`已完成工具链缓存: ${cacheDir}\n`);
+          return candidate;
+        }
+      }
+
+      throw new Error("工具链下载完成，但未找到可用 CLI 入口。");
+    } finally {
+      await rmWithRetry(tempDir, { recursive: true, force: true }).catch(noop);
+    }
+  })();
+
+  try {
+    const resolved = await cachedBuilderBootstrapPromise;
+    return resolved;
+  } catch (error) {
+    cachedBuilderBootstrapPromise = null;
+    throw error;
+  }
 }
 
 function configureLocalAppPaths() {
@@ -693,6 +894,88 @@ function resolveBuilderRuntime() {
   };
 }
 
+function hasExecutable(command, versionArgs = ["--version"]) {
+  const probe = spawnSync(command, versionArgs, {
+    windowsHide: true,
+    encoding: "utf-8",
+  });
+  return probe.status === 0;
+}
+
+function resolveLocalBuilderCliPath() {
+  const candidates = ["electron-builder/cli.js", "electron-builder/out/cli/cli.js"];
+  for (const request of candidates) {
+    try {
+      return require.resolve(request);
+    } catch (error) {
+      // Try next candidate.
+    }
+  }
+
+  return "";
+}
+
+async function resolveBuilderLauncher(runtime, onLog = noop) {
+  const localBuilderCli = resolveLocalBuilderCliPath();
+  if (localBuilderCli) {
+    return {
+      source: "local",
+      command: runtime.command,
+      prefixArgs: [localBuilderCli],
+      mode: runtime.mode,
+      description: "本地 electron-builder CLI",
+    };
+  }
+
+  try {
+    const cachedBuilderCli = await bootstrapCachedBuilderCli(onLog);
+    if (cachedBuilderCli) {
+      return {
+        source: "cache",
+        command: runtime.command,
+        prefixArgs: [cachedBuilderCli],
+        mode: runtime.mode,
+        description: "缓存工具链 electron-builder CLI",
+      };
+    }
+  } catch (error) {
+    onLog(`缓存工具链初始化失败，将尝试 npx/npm 兜底: ${error.message}\n`);
+  }
+
+  const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
+  if (hasExecutable(npxCommand)) {
+    return {
+      source: "npx",
+      command: npxCommand,
+      prefixArgs: ["--yes", `electron-builder@${ELECTRON_BUILDER_VERSION}`],
+      mode: "npx",
+      description: "npx electron-builder",
+    };
+  }
+
+  const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+  if (hasExecutable(npmCommand)) {
+    return {
+      source: "npm-exec",
+      command: npmCommand,
+      prefixArgs: [
+        "exec",
+        "--yes",
+        "--package",
+        `electron-builder@${ELECTRON_BUILDER_VERSION}`,
+        "--",
+        "electron-builder",
+      ],
+      mode: "npm-exec",
+      description: "npm exec electron-builder",
+    };
+  }
+
+  throw new Error(
+    "未找到可用的 electron-builder 入口（本地 CLI / npx / npm exec）。请安装 Node.js 并确保 electron-builder 可用。"
+  );
+}
+
 function getGeneratedWindowOptions(form) {
   const width = parsePositiveInt(form.windowWidth, 1280);
   const height = parsePositiveInt(form.windowHeight, 800);
@@ -1176,13 +1459,6 @@ async function runBuild(form, onLog, onStatus = noop) {
   );
   await fs.writeFile(tempConfigPath, JSON.stringify(config, null, 2), "utf-8");
 
-  let localBuilderCli;
-  try {
-    localBuilderCli = require.resolve("electron-builder/cli.js");
-  } catch (error) {
-    throw new Error("未找到本地 electron-builder CLI，请确认依赖已安装。");
-  }
-
   const args = [
     "build",
     "--projectDir",
@@ -1191,6 +1467,7 @@ async function runBuild(form, onLog, onStatus = noop) {
     tempConfigPath,
   ];
   const runtime = resolveBuilderRuntime();
+  const launcher = await resolveBuilderLauncher(runtime, onLog);
 
   const childEnv = {
     ...process.env,
@@ -1232,14 +1509,15 @@ async function runBuild(form, onLog, onStatus = noop) {
     onLog("未选择平台，electron-builder 将使用项目默认配置。\n");
   }
 
-  onLog(`执行命令: ${runtime.command} ${localBuilderCli} ${args.join(" ")}\n`);
-
-  onLog(`检测到本地 electron-builder，已通过 ${runtime.mode} runtime 调用。\n`);
+  onLog(
+    `执行命令: ${launcher.command} ${[...launcher.prefixArgs, ...args].join(" ")}\n`
+  );
+  onLog(`已选择构建器入口: ${launcher.description}（${launcher.mode}）。\n`);
 
   return new Promise((resolve, reject) => {
     const child = spawn(
-      runtime.command,
-      [localBuilderCli, ...args],
+      launcher.command,
+      [...launcher.prefixArgs, ...args],
       {
         cwd: buildProjectDir,
         env: childEnv,
