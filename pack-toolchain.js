@@ -13,12 +13,18 @@ const pkg = {
   version: "1.0.0",
   private: true,
   dependencies: {
-    "electron-builder": "26.8.1",
-    "npm": "^10.9.4"
+    "electron-builder": "26.8.1"
   }
 };
 fs.writeFileSync(path.join(vendorDir, 'package.json'), JSON.stringify(pkg, null, 2));
 
 console.log("Installing toolchain into vendor/toolchain...");
 const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-cp.execSync(`${npmCmd} install --no-audit --no-fund --include=optional`, { cwd: vendorDir, stdio: 'inherit' });
+const installArgs = [
+  "install",
+  "--no-audit",
+  "--no-fund",
+  "--include=optional",
+  "--loglevel=error"
+];
+cp.execSync(`${npmCmd} ${installArgs.join(" ")}`, { cwd: vendorDir, stdio: "inherit" });
