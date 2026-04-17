@@ -21,7 +21,9 @@ const os = require("node:os");
 const { spawn, spawnSync } = require("node:child_process");
 
 const SETTINGS_FILE_NAME = "builder-settings.json";
-const LOCAL_CACHE_ROOT = path.join(__dirname, ".cache");
+const LOCAL_CACHE_ROOT = app.isPackaged
+  ? path.join(app.getPath("appData"), app.getName() || "html2exe", ".cache")
+  : path.join(__dirname, ".cache");
 const DEFAULT_PROJECT_ICON = path.join(
   __dirname,
   "src",

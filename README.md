@@ -203,7 +203,14 @@ npx electron-builder --projectDir <目录> --config <临时配置.json> [--x64|-
 
 ## 缓存与配置持久化
 
-本项目将缓存限制在仓库内 .cache，避免污染系统全局目录。
+本项目会按运行模式选择缓存根目录：
+
+- 开发模式（`npm run start`）：`<仓库根目录>/.cache`
+- 打包后运行（EXE）：`<系统 appData>/<应用名>/.cache`
+
+Windows 默认示例（应用名为 html2exe）：
+
+- `C:/Users/<用户名>/AppData/Roaming/html2exe/.cache`
 
 缓存结构：
 
