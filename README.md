@@ -162,6 +162,8 @@ npm run build
 - `extraResources` -> `build.extraResources`
 - `asarUnpack` -> `build.asarUnpack`
 
+说明：若某项在 `package.json` 中是对象（例如 `extraResources` 常见的 `{ "from": "...", "to": "..." }`），界面文本框按“每行一条 JSON”输入；字符串规则仍可直接逐行填写。
+
 ### 纯 HTML 模式窗口参数
 
 仅在自动补全模式生效：

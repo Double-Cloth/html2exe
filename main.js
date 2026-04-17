@@ -93,21 +93,112 @@ function runCommandCapture(command, args, options = {}) {
   });
 }
 
-function resolveBundledBuilderCliPath() {
+function collectBundledNodeModuleRoots() {
   const roots = new Set();
-  roots.add(path.join(process.resourcesPath || "", "embedded", "toolchain", "node_modules"));
-  roots.add(path.join(__dirname, "vendor", "toolchain", "node_modules"));
+
+  const resourcePath = process.resourcesPath || "";
+  if (resourcePath) {
+    roots.add(path.join(resourcePath, "embedded", "toolchain", "node_modules"));
+    roots.add(path.join(resourcePath, "embedded", "node_modules"));
+    roots.add(path.join(resourcePath, "app", "embedded", "toolchain", "node_modules"));
+    roots.add(path.join(resourcePath, "app", "embedded", "node_modules"));
+    roots.add(path.join(resourcePath, "app", "vendor", "toolchain", "node_modules"));
+    roots.add(path.join(resourcePath, "app.asar.unpacked", "embedded", "toolchain", "node_modules"));
+    roots.add(path.join(resourcePath, "app.asar.unpacked", "embedded", "node_modules"));
+    roots.add(path.join(resourcePath, "app.asar.unpacked", "vendor", "toolchain", "node_modules"));
+  }
 
   const appPath = app.getAppPath();
-  roots.add(path.join(path.dirname(appPath), "embedded", "toolchain", "node_modules"));
+  const appDir = path.dirname(appPath);
+  roots.add(path.join(appPath, "embedded", "toolchain", "node_modules"));
+  roots.add(path.join(appPath, "embedded", "node_modules"));
+  roots.add(path.join(appPath, "vendor", "toolchain", "node_modules"));
+  roots.add(path.join(appPath, "node_modules"));
+  roots.add(path.join(appDir, "embedded", "toolchain", "node_modules"));
+  roots.add(path.join(appDir, "embedded", "node_modules"));
+  roots.add(path.join(appDir, "app", "embedded", "toolchain", "node_modules"));
+  roots.add(path.join(appDir, "app", "embedded", "node_modules"));
+  roots.add(path.join(appDir, "app", "vendor", "toolchain", "node_modules"));
+  roots.add(path.join(appDir, "app.asar.unpacked", "vendor", "toolchain", "node_modules"));
 
+  const exeDir = path.dirname(process.execPath || "");
+  if (exeDir) {
+    roots.add(path.join(exeDir, "resources", "embedded", "toolchain", "node_modules"));
+    roots.add(path.join(exeDir, "resources", "embedded", "node_modules"));
+    roots.add(path.join(exeDir, "resources", "app", "embedded", "toolchain", "node_modules"));
+    roots.add(path.join(exeDir, "resources", "app", "embedded", "node_modules"));
+    roots.add(path.join(exeDir, "resources", "app", "vendor", "toolchain", "node_modules"));
+    roots.add(path.join(exeDir, "resources", "app.asar.unpacked", "embedded", "toolchain", "node_modules"));
+    roots.add(path.join(exeDir, "resources", "app.asar.unpacked", "embedded", "node_modules"));
+    roots.add(path.join(exeDir, "resources", "app.asar.unpacked", "vendor", "toolchain", "node_modules"));
+  }
+
+  roots.add(path.join(__dirname, "vendor", "toolchain", "node_modules"));
+  roots.add(path.join(__dirname, "node_modules"));
+
+  if (resourcePath && fssync.existsSync(resourcePath)) {
+    try {
+      const walk = (d, depth) => {
+        if (depth > 3) return;
+        const entries = fssync.readdirSync(d, { withFileTypes: true });
+        for (const e of entries) {
+          if (e.isDirectory() && e.name !== "app.asar") {
+             if (e.name === "node_modules") roots.add(path.join(d, e.name));
+             else walk(path.join(d, e.name), depth + 1);
+          }
+        }
+      };
+      walk(resourcePath, 0);
+    } catch(e) {}
+  }
+
+  if (exeDir) {
+    const fallbackRes = path.join(exeDir, "resources");
+    if (fallbackRes !== resourcePath && fssync.existsSync(fallbackRes)) {
+      try {
+        const walk = (d, depth) => {
+          if (depth > 3) return;
+          const entries = fssync.readdirSync(d, { withFileTypes: true });
+          for (const e of entries) {
+            if (e.isDirectory() && e.name !== "app.asar") {
+               if (e.name === "node_modules") roots.add(path.join(d, e.name));
+               else walk(path.join(d, e.name), depth + 1);
+            }
+          }
+        };
+        walk(fallbackRes, 0);
+      } catch(e) {}
+    }
+  }
+
+  return [...roots].filter(Boolean);
+}
+
+function resolveBundledBuilderCliPath() {
   const candidates = [];
-  roots.forEach((root) => {
+  collectBundledNodeModuleRoots().forEach((root) => {
     if (!root) {
       return;
     }
+    const packageJsonPath = path.join(root, "electron-builder", "package.json");
+    if (fssync.existsSync(packageJsonPath)) {
+      try {
+        const pkg = JSON.parse(fssync.readFileSync(packageJsonPath, "utf-8"));
+        if (pkg && pkg.bin) {
+          if (typeof pkg.bin === "string") {
+            candidates.push(path.join(root, "electron-builder", pkg.bin));
+          } else if (typeof pkg.bin === "object") {
+            const binValue = pkg.bin["electron-builder"] || pkg.bin["electron-builder.js"] || Object.values(pkg.bin)[0];
+            if (typeof binValue === "string") {
+              candidates.push(path.join(root, "electron-builder", binValue));
+            }
+          }
+        }
+      } catch (error) {}
+    }
     candidates.push(path.join(root, "electron-builder", "cli.js"));
     candidates.push(path.join(root, "electron-builder", "out", "cli", "cli.js"));
+    candidates.push(path.join(root, "electron-builder", "out", "cli.js"));
   });
 
   for (const candidate of candidates) {
@@ -120,19 +211,30 @@ function resolveBundledBuilderCliPath() {
 }
 
 function resolveBundledNpmCliPath() {
-  const roots = new Set();
-  roots.add(path.join(process.resourcesPath || "", "embedded", "toolchain", "node_modules"));
-  roots.add(path.join(__dirname, "vendor", "toolchain", "node_modules"));
-
-  const appPath = app.getAppPath();
-  roots.add(path.join(path.dirname(appPath), "embedded", "toolchain", "node_modules"));
-
   const candidates = [];
-  roots.forEach((root) => {
+  collectBundledNodeModuleRoots().forEach((root) => {
     if (!root) {
       return;
     }
+    const packageJsonPath = path.join(root, "npm", "package.json");
+    if (fssync.existsSync(packageJsonPath)) {
+      try {
+        const pkg = JSON.parse(fssync.readFileSync(packageJsonPath, "utf-8"));
+        if (pkg && pkg.bin) {
+          if (typeof pkg.bin === "string") {
+            candidates.push(path.join(root, "npm", pkg.bin));
+          } else if (typeof pkg.bin === "object") {
+            const binValue = pkg.bin.npm || pkg.bin["npm-cli"] || pkg.bin["npm-cli.js"] || Object.values(pkg.bin)[0];
+            if (typeof binValue === "string") {
+              candidates.push(path.join(root, "npm", binValue));
+            }
+          }
+        }
+      } catch (error) {}
+    }
     candidates.push(path.join(root, "npm", "bin", "npm-cli.js"));
+    candidates.push(path.join(root, "npm", "lib", "cli.js"));
+    candidates.push(path.join(root, "npm", "dist", "bin", "npm-cli.js"));
   });
 
   for (const candidate of candidates) {
@@ -241,9 +343,9 @@ async function bootstrapCachedBuilderCli(onLog = noop) {
     const systemNpmAvailable = hasExecutable(npmCommand);
     const bundledNpmCli = systemNpmAvailable ? "" : resolveBundledNpmCliPath();
     if (!systemNpmAvailable && !bundledNpmCli) {
-      throw new Error("当前环境未检测到 npm，且未找到内置 npm-cli，无法自动安装缓存工具链。");
+        const checkedRoots = collectBundledNodeModuleRoots();
+        throw new Error(`当前环境未检测到 npm，且未找到内置 npm-cli，无法自动安装缓存工具链。\n(内置 npm 检索路径: ${checkedRoots.join(" | ")})`);
     }
-
     await rmWithRetry(cacheDir, { recursive: true, force: true }).catch(noop);
     await fs.mkdir(cacheDir, { recursive: true });
 
@@ -799,6 +901,48 @@ function parseLines(raw) {
     .filter(Boolean);
 }
 
+function stringifyBuildArrayForForm(value) {
+  if (!Array.isArray(value) || value.length === 0) {
+    return "";
+  }
+
+  return value
+    .map((item) => {
+      if (typeof item === "string") {
+        return item;
+      }
+      if (item && typeof item === "object") {
+        try {
+          return JSON.stringify(item);
+        } catch (error) {
+          return String(item);
+        }
+      }
+      return String(item);
+    })
+    .filter((line) => line && line.trim())
+    .join("\n");
+}
+
+function parseLineItems(raw) {
+  return parseLines(raw).map((line) => {
+    const normalized = line.trim();
+    if (!normalized) {
+      return "";
+    }
+
+    if (normalized.startsWith("{") || normalized.startsWith("[")) {
+      try {
+        return JSON.parse(normalized);
+      } catch (error) {
+        return normalized;
+      }
+    }
+
+    return normalized;
+  }).filter(Boolean);
+}
+
 function parseArchFlags(raw) {
   const allowed = new Set(["x64", "arm64", "ia32", "armv7l", "universal"]);
   return parseCommaList(raw).filter((item) => allowed.has(item));
@@ -1208,13 +1352,9 @@ async function inspectProjectDefaults(projectDirInput) {
       ),
       linuxTargets: linuxTargetNames.join(", "),
       macTargets: macTargetNames.join(", "),
-      filesGlobs: Array.isArray(build.files) ? build.files.join("\n") : "",
-      extraResources: Array.isArray(build.extraResources)
-        ? build.extraResources.join("\n")
-        : "",
-      asarUnpack: Array.isArray(build.asarUnpack)
-        ? build.asarUnpack.join("\n")
-        : "",
+      filesGlobs: stringifyBuildArrayForForm(build.files),
+      extraResources: stringifyBuildArrayForForm(build.extraResources),
+      asarUnpack: stringifyBuildArrayForForm(build.asarUnpack),
       nsisShortcutName:
         build.nsis && typeof build.nsis.shortcutName === "string"
           ? build.nsis.shortcutName
@@ -1266,9 +1406,9 @@ function buildTargetConfig(form) {
     directories: {
       output: form.outputDir || "release",
     },
-    files: parseLines(form.filesGlobs),
-    asarUnpack: parseLines(form.asarUnpack),
-    extraResources: parseLines(form.extraResources),
+    files: parseLineItems(form.filesGlobs),
+    asarUnpack: parseLineItems(form.asarUnpack),
+    extraResources: parseLineItems(form.extraResources),
     extraMetadata: {
       version: form.version || undefined,
       description: form.description || undefined,
@@ -1355,6 +1495,46 @@ function buildTargetConfig(form) {
   return config;
 }
 
+function isSelfBuildProject(projectDir) {
+  try {
+    const pkgPath = path.join(projectDir, "package.json");
+    if (!fssync.existsSync(pkgPath)) {
+      return false;
+    }
+
+    const pkg = JSON.parse(fssync.readFileSync(pkgPath, "utf-8"));
+    return pkg && pkg.name === "html2exe";
+  } catch (error) {
+    return false;
+  }
+}
+
+function injectSelfBuildToolchainResources(projectDir, config) {
+  if (!isSelfBuildProject(projectDir)) {
+    return config;
+  }
+
+  const toolchainResource = {
+    from: "vendor/toolchain/node_modules",
+    to: "embedded/toolchain/node_modules",
+  };
+
+  const existing = Array.isArray(config.extraResources) ? config.extraResources : [];
+  const hasToolchainResource = existing.some((item) => {
+    if (!item || typeof item !== "object") {
+      return false;
+    }
+
+    return item.from === toolchainResource.from && item.to === toolchainResource.to;
+  });
+
+  if (!hasToolchainResource) {
+    config.extraResources = [...existing, toolchainResource];
+  }
+
+  return config;
+}
+
 function normalizeBuildForm(form, onLog = noop) {
   const normalized = { ...form };
 
@@ -1366,6 +1546,91 @@ function normalizeBuildForm(form, onLog = noop) {
   }
 
   return normalized;
+}
+
+async function ensureProjectDependencies(projectDir, runtime, onLog = noop, onStatus = noop) {
+  const pkgPath = path.join(projectDir, "package.json");
+  if (!(await pathExists(pkgPath))) {
+    return;
+  }
+
+  const nodeModulesPath = path.join(projectDir, "node_modules");
+  if (await pathExists(nodeModulesPath)) {
+    onLog("检测到项目 node_modules 已存在，跳过依赖安装。\n");
+    updateStep(onStatus, STEP_KEYS.INSTALL, "done", "依赖已就绪（跳过安装）");
+    return;
+  }
+
+  const sourceIsHtmlOnlyBootstrap = path.basename(projectDir).startsWith("electron-html-pack-");
+  if (sourceIsHtmlOnlyBootstrap) {
+    onLog("纯 HTML 自动补全项目无需预装 node_modules，跳过依赖安装。\n");
+    updateStep(onStatus, STEP_KEYS.INSTALL, "done", "纯 HTML 模式无需安装依赖");
+    return;
+  }
+
+  updateStep(onStatus, STEP_KEYS.INSTALL, "running", "安装项目依赖中");
+  onLog("检测到项目缺少依赖，正在自动安装（先装依赖再打包）...\n");
+
+  const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+  const systemNpmAvailable = hasExecutable(npmCommand);
+  const bundledNpmCli = systemNpmAvailable ? "" : resolveBundledNpmCliPath();
+
+  if (!systemNpmAvailable && !bundledNpmCli) {
+    const checkedRoots = collectBundledNodeModuleRoots();
+    onLog(`内置 npm-cli 检索路径: ${checkedRoots.join(" | ")}\n`);
+    throw new Error("当前环境未检测到 npm，且未找到内置 npm-cli，无法自动安装项目依赖。请使用带内置工具链的新版本重新打包本工具。");
+  }
+
+  const hasPackageLock = await pathExists(path.join(projectDir, "package-lock.json"));
+  const installArgs = [
+    hasPackageLock ? "ci" : "install",
+    "--include=dev",
+    "--no-audit",
+    "--no-fund",
+    "--include=optional",
+  ];
+
+  let command;
+  let args;
+  let env;
+
+  if (systemNpmAvailable) {
+    command = npmCommand;
+    args = installArgs;
+    env = {
+      ...process.env,
+      npm_config_cache: CACHE_PATHS.npmCache,
+      NPM_CONFIG_CACHE: CACHE_PATHS.npmCache,
+    };
+    onLog(`使用系统 npm 安装项目依赖: ${npmCommand} ${installArgs.join(" ")}\n`);
+  } else {
+    command = runtime.command;
+    args = [bundledNpmCli, ...installArgs];
+    env = {
+      ...process.env,
+      npm_config_cache: CACHE_PATHS.npmCache,
+      NPM_CONFIG_CACHE: CACHE_PATHS.npmCache,
+    };
+    if (runtime.mode === "electron-node") {
+      env.ELECTRON_RUN_AS_NODE = "1";
+    }
+    onLog(`系统 npm 不可用，改用内置 npm-cli 安装项目依赖: ${bundledNpmCli}\n`);
+  }
+
+  const installResult = await runCommandCapture(command, args, {
+    cwd: projectDir,
+    windowsHide: true,
+    env,
+  });
+
+  if (installResult.code !== 0) {
+    updateStep(onStatus, STEP_KEYS.INSTALL, "failed", "项目依赖安装失败");
+    const detail = (installResult.stderr || installResult.stdout || "").trim();
+    throw new Error(`项目依赖安装失败: ${detail || `npm 退出码 ${installResult.code}`}`);
+  }
+
+  updateStep(onStatus, STEP_KEYS.INSTALL, "done", "项目依赖安装完成");
+  onLog("项目依赖安装完成，开始进入打包阶段。\n");
 }
 
 function applyRuntimeVersionOverrides(form, childEnv, onLog = noop) {
@@ -1534,7 +1799,10 @@ async function runBuild(form, onLog, onStatus = noop) {
   if (!normalizedForm.electronVersion) {
     normalizedForm.electronVersion = resolveLocalElectronVersion();
   }
-  const config = buildTargetConfig(normalizedForm);
+  const runtime = resolveBuilderRuntime();
+  await ensureProjectDependencies(buildProjectDir, runtime, onLog, onStatus);
+
+  const config = injectSelfBuildToolchainResources(buildProjectDir, buildTargetConfig(normalizedForm));
   const tempConfigPath = path.join(
     CACHE_PATHS.builderTemp,
     `electron-builder-ui-${Date.now()}.json`
@@ -1548,7 +1816,6 @@ async function runBuild(form, onLog, onStatus = noop) {
     "--config",
     tempConfigPath,
   ];
-  const runtime = resolveBuilderRuntime();
   const launcher = await resolveBuilderLauncher(runtime, onLog);
 
   const childEnv = {
