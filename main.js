@@ -1160,12 +1160,19 @@ function resolveLocalBuilderCliPath() {
 async function resolveBuilderLauncher(runtime, onLog = noop) {
   const localBuilderCli = resolveLocalBuilderCliPath();
 
-  // 【新增核心补丁】：生成安全的启动参数
+  // Electron 打包态下，process.argv 可能包含重复的可执行路径，
+  // 需要在 -e 内联脚本里归一化 argv，避免 electron-builder 把 cli.js 识别为业务参数。
   const getSafePrefixArgs = (cliPath) => {
     if (runtime.mode === "electron-node") {
-      // 欺骗 yargs 让其以为是在标准的开发环境下运行，从而正确截断前两个启动参数
-      // JSON.stringify 可以自动且安全地处理 Windows 路径里的反斜杠转义
-      const patchCode = `process.defaultApp = true; require(${JSON.stringify(cliPath)});`;
+      const cliLiteral = JSON.stringify(cliPath);
+      const patchCode = [
+        "process.defaultApp = true;",
+        "process.noAsar = true;",
+        "const argv = process.argv.slice();",
+        "if (argv.length > 1 && argv[1] === process.execPath) argv.splice(1, 1);",
+        `process.argv = [process.execPath, ${cliLiteral}, ...argv.slice(1)];`,
+        `require(${cliLiteral});`,
+      ].join(" ");
       return ["-e", patchCode];
     }
     return [cliPath];
@@ -1176,7 +1183,7 @@ async function resolveBuilderLauncher(runtime, onLog = noop) {
     return {
       source: "local",
       command: runtime.command,
-      prefixArgs: getSafePrefixArgs(localBuilderCli), // 【修改点】应用补丁
+      prefixArgs: getSafePrefixArgs(localBuilderCli),
       mode: runtime.mode,
       description: "本地 electron-builder CLI（" + runtime.mode + "）",
     };
@@ -1190,7 +1197,7 @@ async function resolveBuilderLauncher(runtime, onLog = noop) {
         return {
           source: "cache",
           command: runtime.command,
-          prefixArgs: getSafePrefixArgs(cachedBuilderCli), // 【修改点】应用补丁
+          prefixArgs: getSafePrefixArgs(cachedBuilderCli),
           mode: runtime.mode,
           description: "缓存工具链 electron-builder CLI",
         };
@@ -1584,6 +1591,58 @@ function normalizeBuildForm(form, onLog = noop) {
   return normalized;
 }
 
+async function materializeIconPathForBuilder(iconPath, platformKey, onLog = noop) {
+  const raw = String(iconPath || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  const normalized = raw.replace(/\\/g, "/").toLowerCase();
+  if (!normalized.includes("/app.asar/")) {
+    return raw;
+  }
+
+  const ext = path.extname(raw) || ".png";
+  const iconCacheDir = path.join(CACHE_PATHS.builderTemp, "runtime-assets");
+  try {
+    await fs.mkdir(iconCacheDir, { recursive: true });
+
+    const targetPath = path.join(iconCacheDir, `icon-${platformKey}${ext}`);
+    await fs.copyFile(raw, targetPath);
+    onLog(`检测到 asar 内图标路径，已落地为临时文件: ${targetPath}\n`);
+    return targetPath;
+  } catch (error) {
+    const detail = error && error.message ? error.message : String(error || "未知错误");
+    onLog(`警告: 无法从 asar 中提取 ${platformKey} 图标，已自动禁用该平台图标配置: ${detail}\n`);
+    return "";
+  }
+}
+
+async function materializeBuildIconsForExternalTools(config, onLog = noop) {
+  if (!config || typeof config !== "object") {
+    return;
+  }
+
+  if (config.win && config.win.icon) {
+    config.win.icon = await materializeIconPathForBuilder(config.win.icon, "win", onLog);
+    if (!config.win.icon) {
+      delete config.win.icon;
+    }
+  }
+  if (config.linux && config.linux.icon) {
+    config.linux.icon = await materializeIconPathForBuilder(config.linux.icon, "linux", onLog);
+    if (!config.linux.icon) {
+      delete config.linux.icon;
+    }
+  }
+  if (config.mac && config.mac.icon) {
+    config.mac.icon = await materializeIconPathForBuilder(config.mac.icon, "mac", onLog);
+    if (!config.mac.icon) {
+      delete config.mac.icon;
+    }
+  }
+}
+
 async function ensureProjectDependencies(projectDir, runtime, onLog = noop, onStatus = noop) {
   const pkgPath = path.join(projectDir, "package.json");
   if (!(await pathExists(pkgPath))) {
@@ -1838,6 +1897,35 @@ async function runBuild(form, onLog, onStatus = noop) {
   await ensureProjectDependencies(buildProjectDir, runtime, onLog, onStatus);
 
   const config = injectSelfBuildToolchainResources(buildProjectDir, buildTargetConfig(normalizedForm));
+
+  if (prepared.htmlOnly) {
+    const beforeBuildHookPath = path.join(buildProjectDir, "builder-before-build.cjs");
+    const beforeBuildHookContent = [
+      "module.exports = async function beforeBuildSkipNodeModules() {",
+      "  return false;",
+      "};",
+      "",
+    ].join("\n");
+
+    await fs.writeFile(beforeBuildHookPath, beforeBuildHookContent, "utf-8");
+    // 让 electron-builder 在 beforeBuild 返回 false 后进入“外部处理 node_modules”模式，
+    // 从而跳过 package manager 依赖树收集（无 Node.js 环境也可打包纯 HTML 项目）。
+    config.npmRebuild = true;
+    config.beforeBuild = beforeBuildHookPath;
+    config.nodeGypRebuild = false;
+    // 兼容非管理员/未开启开发者模式的 Windows：
+    // 跳过 exe 资源编辑与签名链路，避免 winCodeSign 压缩包解压符号链接失败。
+    if (!config.win || typeof config.win !== "object") {
+      config.win = {};
+    }
+    config.win.signAndEditExecutable = false;
+    config.forceCodeSigning = false;
+    onLog("纯 HTML 模式已启用 beforeBuild 跳过依赖扫描策略（兼容无 Node.js 环境）。\n");
+    onLog("纯 HTML 模式已启用 Windows 受限环境兼容策略（跳过 exe 资源编辑/签名）。\n");
+  }
+
+  await materializeBuildIconsForExternalTools(config, onLog);
+
   const tempConfigPath = path.join(
     CACHE_PATHS.builderTemp,
     `electron-builder-ui-${Date.now()}.json`
@@ -1870,6 +1958,11 @@ async function runBuild(form, onLog, onStatus = noop) {
 
   if (runtime.mode === "electron-node") {
     childEnv.ELECTRON_RUN_AS_NODE = "1";
+    childEnv.ELECTRON_NO_ASAR = "1";
+  }
+
+  if (prepared.htmlOnly) {
+    childEnv.CSC_IDENTITY_AUTO_DISCOVERY = "false";
   }
 
   for (const arch of parseArchFlags(normalizedForm.arches)) {
