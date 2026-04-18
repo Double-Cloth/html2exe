@@ -1159,12 +1159,24 @@ function resolveLocalBuilderCliPath() {
 
 async function resolveBuilderLauncher(runtime, onLog = noop) {
   const localBuilderCli = resolveLocalBuilderCliPath();
+
+  // 【新增核心补丁】：生成安全的启动参数
+  const getSafePrefixArgs = (cliPath) => {
+    if (runtime.mode === "electron-node") {
+      // 欺骗 yargs 让其以为是在标准的开发环境下运行，从而正确截断前两个启动参数
+      // JSON.stringify 可以自动且安全地处理 Windows 路径里的反斜杠转义
+      const patchCode = `process.defaultApp = true; require(${JSON.stringify(cliPath)});`;
+      return ["-e", patchCode];
+    }
+    return [cliPath];
+  };
+
   if (localBuilderCli && !runtime.useFallback) {
     onLog(`检测到可用 electron-builder CLI: ${localBuilderCli}\n`);
     return {
       source: "local",
       command: runtime.command,
-      prefixArgs: [localBuilderCli],
+      prefixArgs: getSafePrefixArgs(localBuilderCli), // 【修改点】应用补丁
       mode: runtime.mode,
       description: "本地 electron-builder CLI（" + runtime.mode + "）",
     };
@@ -1178,7 +1190,7 @@ async function resolveBuilderLauncher(runtime, onLog = noop) {
         return {
           source: "cache",
           command: runtime.command,
-          prefixArgs: [cachedBuilderCli],
+          prefixArgs: getSafePrefixArgs(cachedBuilderCli), // 【修改点】应用补丁
           mode: runtime.mode,
           description: "缓存工具链 electron-builder CLI",
         };
