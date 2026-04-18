@@ -22,16 +22,15 @@ const { spawn, spawnSync } = require("node:child_process");
 
 const SETTINGS_FILE_NAME = "builder-settings.json";
 const ELECTRON_BUILDER_VERSION = "26.8.1";
+const ELECTRON_BUILDER_BINARIES_MIRROR_DEFAULT = "https://npmmirror.com/mirrors/electron-builder-binaries/";
 const LOCAL_CACHE_ROOT = app.isPackaged
   ? path.join(app.getPath("appData"), app.getName() || "html2exe", ".cache")
   : path.join(__dirname, ".cache");
-const DEFAULT_PROJECT_ICON = path.join(
-  __dirname,
-  "src",
-  "assets",
-  "images",
-  "icon.png"
-);
+const DEFAULT_PROJECT_ICON_CANDIDATES = [
+  path.join(__dirname, "src", "assets", "images", "icon.png"),
+  path.join(__dirname, "assets", "images", "icon.png"),
+];
+let cachedDefaultProjectIconPath = null;
 const CACHE_PATHS = {
   appUserData: path.join(LOCAL_CACHE_ROOT, "electron", "user-data"),
   appCache: path.join(LOCAL_CACHE_ROOT, "electron", "cache"),
@@ -46,6 +45,19 @@ const CACHE_PATHS = {
 
 let cachedBuilderBootstrapPromise = null;
 
+function normalizeMirrorBaseUrl(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  return trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
+}
+
 function ensureLocalCacheDirs() {
   Object.values(CACHE_PATHS).forEach((dir) => {
     fssync.mkdirSync(dir, { recursive: true });
@@ -59,6 +71,34 @@ async function pathExists(targetPath) {
   } catch (error) {
     return false;
   }
+}
+
+function resolveDefaultProjectIconPath() {
+  if (cachedDefaultProjectIconPath !== null) {
+    return cachedDefaultProjectIconPath;
+  }
+
+  const candidates = [...DEFAULT_PROJECT_ICON_CANDIDATES];
+
+  try {
+    const appPath = app.getAppPath();
+    if (appPath) {
+      candidates.push(path.join(appPath, "src", "assets", "images", "icon.png"));
+      candidates.push(path.join(appPath, "assets", "images", "icon.png"));
+    }
+  } catch (error) {}
+
+  try {
+    const resourcesPath = process.resourcesPath || "";
+    if (resourcesPath) {
+      candidates.push(path.join(resourcesPath, "app.asar.unpacked", "src", "assets", "images", "icon.png"));
+      candidates.push(path.join(resourcesPath, "app", "src", "assets", "images", "icon.png"));
+      candidates.push(path.join(resourcesPath, "src", "assets", "images", "icon.png"));
+    }
+  } catch (error) {}
+
+  cachedDefaultProjectIconPath = candidates.find((candidate) => fssync.existsSync(candidate)) || "";
+  return cachedDefaultProjectIconPath;
 }
 
 function runCommandCapture(command, args, options = {}) {
@@ -837,9 +877,9 @@ function getSettingsPath() {
 function getDefaultFormSettings() {
   const localElectronVersion = resolveLocalElectronVersion();
   return {
-    winIcon: DEFAULT_PROJECT_ICON,
-    linuxIcon: DEFAULT_PROJECT_ICON,
-    macIcon: DEFAULT_PROJECT_ICON,
+    winIcon: resolveDefaultProjectIconPath(),
+    linuxIcon: resolveDefaultProjectIconPath(),
+    macIcon: resolveDefaultProjectIconPath(),
     electronVersion: localElectronVersion,
     chromiumVersion: "",
     nodeVersion: "",
@@ -863,14 +903,14 @@ async function writeSettings(settings) {
 }
 
 function createWindow() {
-  const hasDefaultIcon = fssync.existsSync(DEFAULT_PROJECT_ICON);
+  const defaultIcon = resolveDefaultProjectIconPath();
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
     minWidth: 1080,
     minHeight: 680,
     autoHideMenuBar: true,
-    icon: hasDefaultIcon ? DEFAULT_PROJECT_ICON : undefined,
+    icon: defaultIcon || undefined,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -1357,9 +1397,9 @@ async function inspectProjectDefaults(projectDirInput) {
         windowResizable: true,
         windowFullscreenable: true,
         windowAlwaysOnTop: false,
-        winIcon: DEFAULT_PROJECT_ICON,
-        linuxIcon: DEFAULT_PROJECT_ICON,
-        macIcon: DEFAULT_PROJECT_ICON,
+        winIcon: resolveDefaultProjectIconPath(),
+        linuxIcon: resolveDefaultProjectIconPath(),
+        macIcon: resolveDefaultProjectIconPath(),
       },
       mode: "html-only",
       htmlEntry,
@@ -1418,9 +1458,9 @@ async function inspectProjectDefaults(projectDirInput) {
       windowResizable: true,
       windowFullscreenable: true,
       windowAlwaysOnTop: false,
-      winIcon: DEFAULT_PROJECT_ICON,
-      linuxIcon: DEFAULT_PROJECT_ICON,
-      macIcon: DEFAULT_PROJECT_ICON,
+      winIcon: resolveDefaultProjectIconPath(),
+      linuxIcon: resolveDefaultProjectIconPath(),
+      macIcon: resolveDefaultProjectIconPath(),
     },
     mode: "electron-project",
   };
@@ -1591,24 +1631,70 @@ function normalizeBuildForm(form, onLog = noop) {
   return normalized;
 }
 
-async function materializeIconPathForBuilder(iconPath, platformKey, onLog = noop) {
+function sanitizeIconInput(iconPath) {
   const raw = String(iconPath || "").trim();
   if (!raw) {
     return "";
   }
 
-  const normalized = raw.replace(/\\/g, "/").toLowerCase();
-  if (!normalized.includes("/app.asar/")) {
-    return raw;
+  // 兼容手工粘贴时带引号的路径，例如 "D:\\icons\\app.ico"。
+  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+    return raw.slice(1, -1).trim();
   }
 
-  const ext = path.extname(raw) || ".png";
+  return raw;
+}
+
+function resolveIconPathAgainstProject(iconPath, projectDir) {
+  const cleaned = sanitizeIconInput(iconPath);
+  if (!cleaned) {
+    return "";
+  }
+
+  if (path.isAbsolute(cleaned)) {
+    return cleaned;
+  }
+
+  if (projectDir) {
+    return path.resolve(projectDir, cleaned);
+  }
+
+  return path.resolve(cleaned);
+}
+
+async function materializeIconPathForBuilder(iconPath, platformKey, projectDir = "", onLog = noop) {
+  const raw = sanitizeIconInput(iconPath);
+  if (!raw) {
+    return "";
+  }
+
+  const resolvedRaw = resolveIconPathAgainstProject(raw, projectDir);
+
+  if (!(await pathExists(resolvedRaw))) {
+    const defaultIcon = resolveDefaultProjectIconPath();
+    if (defaultIcon) {
+      onLog(
+        `警告: ${platformKey} 图标路径不存在 (${resolvedRaw})，已回退到默认图标: ${defaultIcon}\n`
+      );
+      return defaultIcon;
+    }
+
+    onLog(`警告: ${platformKey} 图标路径不存在 (${resolvedRaw})，且默认图标也不可用，已跳过图标配置。\n`);
+    return "";
+  }
+
+  const normalized = resolvedRaw.replace(/\\/g, "/").toLowerCase();
+  if (!normalized.includes("/app.asar/")) {
+    return resolvedRaw;
+  }
+
+  const ext = path.extname(resolvedRaw) || ".png";
   const iconCacheDir = path.join(CACHE_PATHS.builderTemp, "runtime-assets");
   try {
     await fs.mkdir(iconCacheDir, { recursive: true });
 
     const targetPath = path.join(iconCacheDir, `icon-${platformKey}${ext}`);
-    await fs.copyFile(raw, targetPath);
+    await fs.copyFile(resolvedRaw, targetPath);
     onLog(`检测到 asar 内图标路径，已落地为临时文件: ${targetPath}\n`);
     return targetPath;
   } catch (error) {
@@ -1618,27 +1704,33 @@ async function materializeIconPathForBuilder(iconPath, platformKey, onLog = noop
   }
 }
 
-async function materializeBuildIconsForExternalTools(config, onLog = noop) {
+async function materializeBuildIconsForExternalTools(config, projectDir = "", onLog = noop) {
   if (!config || typeof config !== "object") {
     return;
   }
 
   if (config.win && config.win.icon) {
-    config.win.icon = await materializeIconPathForBuilder(config.win.icon, "win", onLog);
+    config.win.icon = await materializeIconPathForBuilder(config.win.icon, "win", projectDir, onLog);
     if (!config.win.icon) {
       delete config.win.icon;
+    } else {
+      onLog(`Windows 图标最终路径: ${config.win.icon}\n`);
     }
   }
   if (config.linux && config.linux.icon) {
-    config.linux.icon = await materializeIconPathForBuilder(config.linux.icon, "linux", onLog);
+    config.linux.icon = await materializeIconPathForBuilder(config.linux.icon, "linux", projectDir, onLog);
     if (!config.linux.icon) {
       delete config.linux.icon;
+    } else {
+      onLog(`Linux 图标最终路径: ${config.linux.icon}\n`);
     }
   }
   if (config.mac && config.mac.icon) {
-    config.mac.icon = await materializeIconPathForBuilder(config.mac.icon, "mac", onLog);
+    config.mac.icon = await materializeIconPathForBuilder(config.mac.icon, "mac", projectDir, onLog);
     if (!config.mac.icon) {
       delete config.mac.icon;
+    } else {
+      onLog(`macOS 图标最终路径: ${config.mac.icon}\n`);
     }
   }
 }
@@ -1800,14 +1892,74 @@ async function prepareWorkspaceForBuild(form, onLog, onStatus = noop) {
     `electron-html-pack-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
   );
   const appSourceDir = path.join(tempProjectDir, "app-source");
+  const appIconsDir = path.join(tempProjectDir, "app-icons");
   await fs.mkdir(appSourceDir, { recursive: true });
+  await fs.mkdir(appIconsDir, { recursive: true });
+
+  const runtimeIconRelative = {
+    win32: "",
+    linux: "",
+    darwin: "",
+  };
+
+  const htmlOnlyBuildIcons = {
+    winIcon: "",
+    linuxIcon: "",
+    macIcon: "",
+  };
+
+  const runtimeIconCandidates = [
+    ["win32", form.winIcon],
+    ["linux", form.linuxIcon],
+    ["darwin", form.macIcon],
+  ];
+
+  for (const [platformKey, iconInput] of runtimeIconCandidates) {
+    const resolvedIconPath = resolveIconPathAgainstProject(iconInput || "", sourceDir);
+    if (!resolvedIconPath || !(await pathExists(resolvedIconPath))) {
+      continue;
+    }
+
+    const iconExt = path.extname(resolvedIconPath) || ".png";
+    const targetBaseName = `icon-${platformKey}${iconExt}`;
+    const targetPath = path.join(appIconsDir, targetBaseName);
+
+    try {
+      await fs.copyFile(resolvedIconPath, targetPath);
+      runtimeIconRelative[platformKey] = path.join("app-icons", targetBaseName).replace(/\\/g, "/");
+      if (platformKey === "win32") {
+        htmlOnlyBuildIcons.winIcon = targetPath;
+      } else if (platformKey === "linux") {
+        htmlOnlyBuildIcons.linuxIcon = targetPath;
+      } else if (platformKey === "darwin") {
+        htmlOnlyBuildIcons.macIcon = targetPath;
+      }
+      onLog(`纯 HTML 模式已写入运行时图标(${platformKey}): ${targetPath}\n`);
+    } catch (error) {
+      const detail = error && error.message ? error.message : String(error || "未知错误");
+      onLog(`警告: 复制纯 HTML 运行时图标失败(${platformKey}): ${detail}\n`);
+    }
+  }
+
+  const requiredRuntimeIconChecks = [
+    ["win32", form.winIcon, htmlOnlyBuildIcons.winIcon],
+    ["linux", form.linuxIcon, htmlOnlyBuildIcons.linuxIcon],
+    ["darwin", form.macIcon, htmlOnlyBuildIcons.macIcon],
+  ];
+
+  for (const [platformKey, configuredIcon, copiedIcon] of requiredRuntimeIconChecks) {
+    const configured = String(configuredIcon || "").trim();
+    if (configured && !copiedIcon) {
+      throw new Error(`纯 HTML 模式复制图标失败(${platformKey})，已阻止继续打包以避免回退默认图标: ${configured}`);
+    }
+  }
 
   const windowOptions = getGeneratedWindowOptions(form);
-  const mainJs = `const { app, BrowserWindow } = require("electron");\nconst path = require("node:path");\n\nconst WINDOW_OPTIONS = ${JSON.stringify(
+  const mainJs = `const { app, BrowserWindow } = require("electron");\nconst fs = require("node:fs");\nconst path = require("node:path");\n\nconst WINDOW_OPTIONS = ${JSON.stringify(
     windowOptions,
     null,
     2
-  )};\n\nfunction createWindow() {\n  const { showMenuBar, ...browserWindowOptions } = WINDOW_OPTIONS;\n  const win = new BrowserWindow(browserWindowOptions);\n  win.setMenuBarVisibility(Boolean(showMenuBar));\n  win.loadFile(path.join(__dirname, "app-source", ${JSON.stringify(
+  )};\nconst WINDOW_ICON_RELATIVE = ${JSON.stringify(runtimeIconRelative, null, 2)};\n\nfunction resolveWindowIcon() {\n  const relativeIcon = WINDOW_ICON_RELATIVE[process.platform] || "";\n  if (!relativeIcon) {\n    return undefined;\n  }\n\n  const candidatePaths = [\n    path.join(process.resourcesPath || "", relativeIcon),\n    path.join(__dirname, relativeIcon),\n  ];\n\n  const absPath = candidatePaths.find((candidate) => candidate && fs.existsSync(candidate));\n  return absPath || undefined;\n}\n\nfunction createWindow() {\n  const { showMenuBar, ...browserWindowOptions } = WINDOW_OPTIONS;\n  const win = new BrowserWindow({\n    ...browserWindowOptions,\n    icon: resolveWindowIcon(),\n  });\n  win.setMenuBarVisibility(Boolean(showMenuBar));\n  win.loadFile(path.join(__dirname, "app-source", ${JSON.stringify(
     htmlEntry
   )}));\n}\n\napp.whenReady().then(createWindow);\napp.on("window-all-closed", () => {\n  if (process.platform !== "darwin") app.quit();\n});\n`;
 
@@ -1850,6 +2002,26 @@ async function prepareWorkspaceForBuild(form, onLog, onStatus = noop) {
     filter: (src) => !shouldSkipHtmlCopyPath(sourceDir, resolvedOutputDir, src),
   });
 
+  onLog("纯 HTML 模式将把 app-icons 作为 extraResources（resources/app-icons）写入产物，避免 asar 图标读取回退。\n");
+  if (htmlOnlyBuildIcons.winIcon || htmlOnlyBuildIcons.linuxIcon || htmlOnlyBuildIcons.macIcon) {
+    onLog(
+      `纯 HTML 模式已改写构建图标路径: win=${htmlOnlyBuildIcons.winIcon || "(空)"}, linux=${htmlOnlyBuildIcons.linuxIcon || "(空)"}, mac=${htmlOnlyBuildIcons.macIcon || "(空)"}\n`
+    );
+  }
+
+  const htmlOnlyExtraResources = parseLineItems(form.extraResources);
+  const hasAppIconsResource = htmlOnlyExtraResources.some((item) => {
+    if (!item || typeof item !== "object") {
+      return false;
+    }
+
+    return item.from === "app-icons" && item.to === "app-icons";
+  });
+
+  if (!hasAppIconsResource) {
+    htmlOnlyExtraResources.push({ from: "app-icons", to: "app-icons" });
+  }
+
   return {
     projectDir: tempProjectDir,
     cleanup: async () => {
@@ -1859,6 +2031,10 @@ async function prepareWorkspaceForBuild(form, onLog, onStatus = noop) {
       ...form,
       outputDir: resolvedOutputDir,
       filesGlobs: normalizedFilesGlobs,
+      extraResources: stringifyBuildArrayForForm(htmlOnlyExtraResources),
+      winIcon: htmlOnlyBuildIcons.winIcon || form.winIcon,
+      linuxIcon: htmlOnlyBuildIcons.linuxIcon || form.linuxIcon,
+      macIcon: htmlOnlyBuildIcons.macIcon || form.macIcon,
       asar: true,
       asarUnpack: form.asarUnpack || "",
       npmRebuild: false,
@@ -1913,18 +2089,70 @@ async function runBuild(form, onLog, onStatus = noop) {
     config.npmRebuild = true;
     config.beforeBuild = beforeBuildHookPath;
     config.nodeGypRebuild = false;
+
+    const defaultWinIconPath = resolveDefaultProjectIconPath();
+    const requestedWinIconPath = resolveIconPathAgainstProject(form.winIcon || "", projectDir);
+    const hasCustomWindowsIcon = Boolean(requestedWinIconPath) &&
+      (!defaultWinIconPath ||
+        path.resolve(requestedWinIconPath).toLowerCase() !== path.resolve(defaultWinIconPath).toLowerCase());
+
     // 兼容非管理员/未开启开发者模式的 Windows：
-    // 跳过 exe 资源编辑与签名链路，避免 winCodeSign 压缩包解压符号链接失败。
+    // 无自定义图标时跳过 exe 资源编辑，降低 winCodeSign 压缩包解压符号链接失败概率。
+    // 有自定义图标时保留资源编辑，否则 Windows 可执行文件图标不会生效。
     if (!config.win || typeof config.win !== "object") {
       config.win = {};
     }
-    config.win.signAndEditExecutable = false;
+    config.win.signAndEditExecutable = hasCustomWindowsIcon;
     config.forceCodeSigning = false;
     onLog("纯 HTML 模式已启用 beforeBuild 跳过依赖扫描策略（兼容无 Node.js 环境）。\n");
-    onLog("纯 HTML 模式已启用 Windows 受限环境兼容策略（跳过 exe 资源编辑/签名）。\n");
+    if (hasCustomWindowsIcon) {
+      onLog("检测到自定义 Windows 图标，已启用 exe 资源编辑以确保图标生效。\n");
+    } else {
+      const existingWinTargets = Array.isArray(config.win.target)
+        ? config.win.target
+        : [];
+      onLog("纯 HTML 模式已启用 Windows 受限环境兼容策略（跳过 exe 资源编辑/签名）。\n");
+
+      const installerRequested = existingWinTargets.some((target) => {
+        const lower = String(target || "").trim().toLowerCase();
+        return lower === "nsis" || lower === "nsis-web";
+      });
+
+      if (installerRequested) {
+        // 即使选择了 NSIS，也禁用签名以避免 Windows 权限限制导致的符号链接失败
+        // 改为关闭所有代码签名相关功能，生成未签名的可执行文件和安装包
+        config.win.signAndEditExecutable = false;
+        config.forceCodeSigning = false;
+        onLog("检测到已选择 Windows 安装包目标（nsis/nsis-web），但已禁用 exe 资源编辑/签名以绕过权限限制。\n");
+      } else {
+        if (existingWinTargets.length === 0) {
+          // 未显式指定目标时，electron-builder 的 Windows 默认目标即安装包（nsis）。
+          // 这里保持默认行为，避免把“默认安装包”误降级成 dir。
+          onLog("未显式指定 Windows 目标，保留 electron-builder 默认安装包策略（nsis）。\n");
+        } else {
+          const safeWinTargets = existingWinTargets
+            .map((target) => String(target || "").trim())
+            .filter(Boolean)
+            .filter((target) => {
+              const lower = target.toLowerCase();
+              return lower !== "nsis" && lower !== "nsis-web";
+            });
+
+          // Windows 受限环境里 NSIS 阶段会调用 app-builder.exe，易触发 0xC0000142。
+          // 未选择安装包时，若去掉 NSIS 后无其它目标，则回退为 dir，确保至少产出可运行目录。
+          if (safeWinTargets.length === 0) {
+            safeWinTargets.push("dir");
+          }
+
+          config.win.target = safeWinTargets;
+          delete config.nsis;
+          onLog(`纯 HTML 模式已自动调整 Windows 目标为: ${safeWinTargets.join(", ")}（未选择安装包，已跳过 NSIS）。\n`);
+        }
+      }
+    }
   }
 
-  await materializeBuildIconsForExternalTools(config, onLog);
+  await materializeBuildIconsForExternalTools(config, projectDir, onLog);
 
   const tempConfigPath = path.join(
     CACHE_PATHS.builderTemp,
@@ -1953,6 +2181,31 @@ async function runBuild(form, onLog, onStatus = noop) {
     npm_config_cache: CACHE_PATHS.npmCache,
     NPM_CONFIG_CACHE: CACHE_PATHS.npmCache,
   };
+
+  const normalizedMirror = normalizeMirrorBaseUrl(
+    childEnv.ELECTRON_BUILDER_BINARIES_MIRROR || ELECTRON_BUILDER_BINARIES_MIRROR_DEFAULT
+  );
+
+  if (!childEnv.ELECTRON_BUILDER_BINARIES_MIRROR) {
+    childEnv.ELECTRON_BUILDER_BINARIES_MIRROR = normalizedMirror;
+    onLog(`未检测到 ELECTRON_BUILDER_BINARIES_MIRROR，已使用默认镜像: ${normalizedMirror}\n`);
+  } else if (childEnv.ELECTRON_BUILDER_BINARIES_MIRROR !== normalizedMirror) {
+    childEnv.ELECTRON_BUILDER_BINARIES_MIRROR = normalizedMirror;
+    onLog(`已自动规范化 ELECTRON_BUILDER_BINARIES_MIRROR: ${normalizedMirror}\n`);
+  }
+
+  const electronMirrorDefault = normalizeMirrorBaseUrl(
+    childEnv.ELECTRON_MIRROR || "https://npmmirror.com/mirrors/electron/"
+  );
+  if (!childEnv.ELECTRON_MIRROR) {
+    childEnv.ELECTRON_MIRROR = electronMirrorDefault;
+    onLog(`未检测到 ELECTRON_MIRROR，已使用默认镜像: ${electronMirrorDefault}\n`);
+  } else if (childEnv.ELECTRON_MIRROR !== electronMirrorDefault) {
+    childEnv.ELECTRON_MIRROR = electronMirrorDefault;
+    onLog(`已自动规范化 ELECTRON_MIRROR: ${electronMirrorDefault}\n`);
+  }
+  childEnv.npm_config_electron_mirror = childEnv.ELECTRON_MIRROR;
+  childEnv.NPM_CONFIG_ELECTRON_MIRROR = childEnv.ELECTRON_MIRROR;
 
   applyRuntimeVersionOverrides(normalizedForm, childEnv, onLog);
 
