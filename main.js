@@ -286,6 +286,43 @@ function resolveBundledNpmCliPath() {
   return "";
 }
 
+function resolveBundledRceditBinaryPath() {
+  const candidates = [];
+  collectBundledNodeModuleRoots().forEach((root) => {
+    if (!root) {
+      return;
+    }
+
+    candidates.push(path.join(root, "rcedit", "bin", "rcedit.exe"));
+    candidates.push(path.join(root, "rcedit", "rcedit.exe"));
+
+    const packageJsonPath = path.join(root, "rcedit", "package.json");
+    if (fssync.existsSync(packageJsonPath)) {
+      try {
+        const pkg = JSON.parse(fssync.readFileSync(packageJsonPath, "utf-8"));
+        if (pkg && pkg.bin) {
+          if (typeof pkg.bin === "string") {
+            candidates.push(path.join(root, "rcedit", pkg.bin));
+          } else if (typeof pkg.bin === "object") {
+            const binValue = pkg.bin.rcedit || Object.values(pkg.bin)[0];
+            if (typeof binValue === "string") {
+              candidates.push(path.join(root, "rcedit", binValue));
+            }
+          }
+        }
+      } catch (error) {}
+    }
+  });
+
+  for (const candidate of candidates) {
+    if (fssync.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
 function resolveBuilderPackageRootFromCli(cliPath) {
   let current = path.dirname(cliPath);
   for (let depth = 0; depth < 6; depth += 1) {
@@ -1684,24 +1721,81 @@ async function materializeIconPathForBuilder(iconPath, platformKey, projectDir =
   }
 
   const normalized = resolvedRaw.replace(/\\/g, "/").toLowerCase();
-  if (!normalized.includes("/app.asar/")) {
-    return resolvedRaw;
+  let materializedPath = resolvedRaw;
+
+  if (normalized.includes("/app.asar/")) {
+    const ext = path.extname(resolvedRaw) || ".png";
+    const iconCacheDir = path.join(CACHE_PATHS.builderTemp, "runtime-assets");
+    try {
+      await fs.mkdir(iconCacheDir, { recursive: true });
+
+      const targetPath = path.join(iconCacheDir, `icon-${platformKey}${ext}`);
+      await fs.copyFile(resolvedRaw, targetPath);
+      onLog(`检测到 asar 内图标路径，已落地为临时文件: ${targetPath}\n`);
+      materializedPath = targetPath;
+    } catch (error) {
+      const detail = error && error.message ? error.message : String(error || "未知错误");
+      onLog(`警告: 无法从 asar 中提取 ${platformKey} 图标，已自动禁用该平台图标配置: ${detail}\n`);
+      return "";
+    }
   }
 
-  const ext = path.extname(resolvedRaw) || ".png";
-  const iconCacheDir = path.join(CACHE_PATHS.builderTemp, "runtime-assets");
-  try {
-    await fs.mkdir(iconCacheDir, { recursive: true });
+  if (platformKey === "win") {
+    const ext = path.extname(materializedPath).toLowerCase();
+    if (ext !== ".ico") {
+      try {
+        const buffer = await fs.readFile(materializedPath);
+        const pngSignature =
+          buffer.length >= 8 &&
+          buffer[0] === 0x89 &&
+          buffer[1] === 0x50 &&
+          buffer[2] === 0x4e &&
+          buffer[3] === 0x47 &&
+          buffer[4] === 0x0d &&
+          buffer[5] === 0x0a &&
+          buffer[6] === 0x1a &&
+          buffer[7] === 0x0a;
 
-    const targetPath = path.join(iconCacheDir, `icon-${platformKey}${ext}`);
-    await fs.copyFile(resolvedRaw, targetPath);
-    onLog(`检测到 asar 内图标路径，已落地为临时文件: ${targetPath}\n`);
-    return targetPath;
-  } catch (error) {
-    const detail = error && error.message ? error.message : String(error || "未知错误");
-    onLog(`警告: 无法从 asar 中提取 ${platformKey} 图标，已自动禁用该平台图标配置: ${detail}\n`);
-    return "";
+        if (pngSignature) {
+          const iconCacheDir = path.join(CACHE_PATHS.builderTemp, "runtime-assets");
+          await fs.mkdir(iconCacheDir, { recursive: true });
+
+          const pngWidth = buffer.length >= 24 ? buffer.readUInt32BE(16) : 0;
+          const pngHeight = buffer.length >= 24 ? buffer.readUInt32BE(20) : 0;
+          const icoWidth = pngWidth >= 256 ? 0 : Math.max(1, Math.min(255, pngWidth || 256));
+          const icoHeight = pngHeight >= 256 ? 0 : Math.max(1, Math.min(255, pngHeight || 256));
+
+          const header = Buffer.alloc(6);
+          header.writeUInt16LE(0, 0);
+          header.writeUInt16LE(1, 2);
+          header.writeUInt16LE(1, 4);
+
+          const directoryEntry = Buffer.alloc(16);
+          directoryEntry.writeUInt8(icoWidth, 0);
+          directoryEntry.writeUInt8(icoHeight, 1);
+          directoryEntry.writeUInt8(0, 2);
+          directoryEntry.writeUInt8(0, 3);
+          directoryEntry.writeUInt16LE(1, 4);
+          directoryEntry.writeUInt16LE(32, 6);
+          directoryEntry.writeUInt32LE(buffer.length, 8);
+          directoryEntry.writeUInt32LE(22, 12);
+
+          const icoBuffer = Buffer.concat([header, directoryEntry, buffer]);
+          const icoPath = path.join(iconCacheDir, `icon-win-${Date.now()}.ico`);
+          await fs.writeFile(icoPath, icoBuffer);
+          onLog(`Windows 图标已自动从 ${ext || "原格式"} 转换为 ICO: ${icoPath}\n`);
+          return icoPath;
+        }
+
+        onLog(`警告: Windows 图标不是 ICO 或 PNG 格式，可能导致可执行文件图标回退默认: ${materializedPath}\n`);
+      } catch (error) {
+        const detail = error && error.message ? error.message : String(error || "未知错误");
+        onLog(`警告: 处理 Windows 图标失败，继续使用原文件: ${detail}\n`);
+      }
+    }
   }
+
+  return materializedPath;
 }
 
 async function materializeBuildIconsForExternalTools(config, projectDir = "", onLog = noop) {
@@ -1715,6 +1809,12 @@ async function materializeBuildIconsForExternalTools(config, projectDir = "", on
       delete config.win.icon;
     } else {
       onLog(`Windows 图标最终路径: ${config.win.icon}\n`);
+      if (config.nsis && typeof config.nsis === "object") {
+        config.nsis.installerIcon = config.win.icon;
+        config.nsis.uninstallerIcon = config.win.icon;
+        config.nsis.installerHeaderIcon = config.win.icon;
+        onLog("已同步 NSIS 安装器/卸载器图标为 Windows 应用图标，以保证安装后图标一致。\n");
+      }
     }
   }
   if (config.linux && config.linux.icon) {
@@ -2076,6 +2176,7 @@ async function runBuild(form, onLog, onStatus = noop) {
 
   if (prepared.htmlOnly) {
     const beforeBuildHookPath = path.join(buildProjectDir, "builder-before-build.cjs");
+    const afterPackHookPath = path.join(buildProjectDir, "builder-after-pack.cjs");
     const beforeBuildHookContent = [
       "module.exports = async function beforeBuildSkipNodeModules() {",
       "  return false;",
@@ -2083,18 +2184,104 @@ async function runBuild(form, onLog, onStatus = noop) {
       "",
     ].join("\n");
 
+    const afterPackHookContent = [
+      "module.exports = async function afterPackPatchWindowsExeIcon(context) {",
+      "  if (!context || context.electronPlatformName !== \"win32\") {",
+      "    return;",
+      "  }",
+      "",
+      "  const fs = require(\"node:fs\");",
+      "  const path = require(\"node:path\");",
+      "  const { spawnSync } = require(\"node:child_process\");",
+      "",
+      "  const rceditPath = String(process.env.HTML2EXE_RCEDIT_PATH || \"\").trim();",
+      "  if (!rceditPath || !fs.existsSync(rceditPath)) {",
+      "    console.log(\"[afterPack] 未检测到 rcedit，已跳过 Windows 可执行文件图标写入。\");",
+      "    return;",
+      "  }",
+      "",
+      "  const winConfig = context.packager && context.packager.config && context.packager.config.win",
+      "    ? context.packager.config.win",
+      "    : {};",
+      "  const iconPath = typeof winConfig.icon === \"string\" ? winConfig.icon : \"\";",
+      "  if (!iconPath || !fs.existsSync(iconPath) || path.extname(iconPath).toLowerCase() !== \".ico\") {",
+      "    console.log(\"[afterPack] Windows 图标不可用（需要存在的 .ico 文件），已跳过 exe 图标写入。\");",
+      "    return;",
+      "  }",
+      "",
+      "  const appOutDir = context.appOutDir || \"\";",
+      "  if (!appOutDir || !fs.existsSync(appOutDir)) {",
+      "    console.log(\"[afterPack] appOutDir 不存在，已跳过 exe 图标写入。\");",
+      "    return;",
+      "  }",
+      "",
+      "  const appInfo = context.packager && context.packager.appInfo ? context.packager.appInfo : null;",
+      "  const preferredExeNames = [];",
+      "  if (appInfo && typeof appInfo.productFilename === \"string\" && appInfo.productFilename.trim()) {",
+      "    preferredExeNames.push(`${appInfo.productFilename}.exe`);",
+      "  }",
+      "  if (appInfo && typeof appInfo.productName === \"string\" && appInfo.productName.trim()) {",
+      "    preferredExeNames.push(`${appInfo.productName}.exe`);",
+      "  }",
+      "  if (appInfo && typeof appInfo.name === \"string\" && appInfo.name.trim()) {",
+      "    preferredExeNames.push(`${appInfo.name}.exe`);",
+      "  }",
+      "",
+      "  const uniqueNames = [...new Set(preferredExeNames.map((item) => item.trim()).filter(Boolean))];",
+      "  let exePath = \"\";",
+      "  for (const exeName of uniqueNames) {",
+      "    const candidate = path.join(appOutDir, exeName);",
+      "    if (fs.existsSync(candidate)) {",
+      "      exePath = candidate;",
+      "      break;",
+      "    }",
+      "  }",
+      "",
+      "  if (!exePath) {",
+      "    const exeCandidates = fs",
+      "      .readdirSync(appOutDir, { withFileTypes: true })",
+      "      .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(\".exe\"))",
+      "      .map((entry) => path.join(appOutDir, entry.name))",
+      "      .filter((candidate) => !path.basename(candidate).toLowerCase().startsWith(\"uninstall\"));",
+      "",
+      "    exeCandidates.sort((a, b) => {",
+      "      const statA = fs.statSync(a);",
+      "      const statB = fs.statSync(b);",
+      "      return statB.size - statA.size;",
+      "    });",
+      "",
+      "    exePath = exeCandidates[0] || \"\";",
+      "  }",
+      "",
+      "  if (!exePath) {",
+      "    console.log(\"[afterPack] 未找到主程序 exe，已跳过图标写入。\");",
+      "    return;",
+      "  }",
+      "",
+      "  const result = spawnSync(rceditPath, [exePath, \"--set-icon\", iconPath], { stdio: \"pipe\" });",
+      "  if (result.status !== 0) {",
+      "    const stderr = result.stderr ? result.stderr.toString() : \"\";",
+      "    const stdout = result.stdout ? result.stdout.toString() : \"\";",
+      "    const detail = (stderr || stdout || `exit status ${result.status}`).trim();",
+      "    throw new Error(`[afterPack] rcedit 写入图标失败: ${detail}`);",
+      "  }",
+      "",
+      "  console.log(`[afterPack] 已写入 Windows 可执行文件图标: ${exePath}`);",
+      "};",
+      "",
+    ].join("\n");
+
     await fs.writeFile(beforeBuildHookPath, beforeBuildHookContent, "utf-8");
+    await fs.writeFile(afterPackHookPath, afterPackHookContent, "utf-8");
     // 让 electron-builder 在 beforeBuild 返回 false 后进入“外部处理 node_modules”模式，
     // 从而跳过 package manager 依赖树收集（无 Node.js 环境也可打包纯 HTML 项目）。
     config.npmRebuild = true;
     config.beforeBuild = beforeBuildHookPath;
+    config.afterPack = afterPackHookPath;
     config.nodeGypRebuild = false;
 
-    const defaultWinIconPath = resolveDefaultProjectIconPath();
     const requestedWinIconPath = resolveIconPathAgainstProject(form.winIcon || "", projectDir);
-    const hasCustomWindowsIcon = Boolean(requestedWinIconPath) &&
-      (!defaultWinIconPath ||
-        path.resolve(requestedWinIconPath).toLowerCase() !== path.resolve(defaultWinIconPath).toLowerCase());
+    const hasConfiguredWindowsIcon = Boolean(requestedWinIconPath) && fssync.existsSync(requestedWinIconPath);
 
     // 兼容非管理员/未开启开发者模式的 Windows：
     // 无自定义图标时跳过 exe 资源编辑，降低 winCodeSign 压缩包解压符号链接失败概率。
@@ -2102,11 +2289,11 @@ async function runBuild(form, onLog, onStatus = noop) {
     if (!config.win || typeof config.win !== "object") {
       config.win = {};
     }
-    config.win.signAndEditExecutable = hasCustomWindowsIcon;
+    config.win.signAndEditExecutable = false;
     config.forceCodeSigning = false;
     onLog("纯 HTML 模式已启用 beforeBuild 跳过依赖扫描策略（兼容无 Node.js 环境）。\n");
-    if (hasCustomWindowsIcon) {
-      onLog("检测到自定义 Windows 图标，已启用 exe 资源编辑以确保图标生效。\n");
+    if (hasConfiguredWindowsIcon) {
+      onLog("检测到已配置 Windows 图标，将在 afterPack 阶段使用 rcedit 写入 exe 图标（已禁用 winCodeSign 依赖路径）。\n");
     } else {
       const existingWinTargets = Array.isArray(config.win.target)
         ? config.win.target
@@ -2119,11 +2306,14 @@ async function runBuild(form, onLog, onStatus = noop) {
       });
 
       if (installerRequested) {
-        // 即使选择了 NSIS，也禁用签名以避免 Windows 权限限制导致的符号链接失败
-        // 改为关闭所有代码签名相关功能，生成未签名的可执行文件和安装包
+        // 保持关闭，避免触发 winCodeSign 压缩包解压中的符号链接权限问题。
         config.win.signAndEditExecutable = false;
         config.forceCodeSigning = false;
-        onLog("检测到已选择 Windows 安装包目标（nsis/nsis-web），但已禁用 exe 资源编辑/签名以绕过权限限制。\n");
+        if (hasConfiguredWindowsIcon) {
+          onLog("检测到已选择 Windows 安装包目标（nsis/nsis-web）且已配置 Windows 图标，将通过 afterPack+rcedit 写入安装后应用图标。\n");
+        } else {
+          onLog("检测到已选择 Windows 安装包目标（nsis/nsis-web），但未配置有效 Windows 图标，安装后应用图标将沿用默认值。\n");
+        }
       } else {
         if (existingWinTargets.length === 0) {
           // 未显式指定目标时，electron-builder 的 Windows 默认目标即安装包（nsis）。
@@ -2216,6 +2406,13 @@ async function runBuild(form, onLog, onStatus = noop) {
 
   if (prepared.htmlOnly) {
     childEnv.CSC_IDENTITY_AUTO_DISCOVERY = "false";
+    const bundledRceditPath = resolveBundledRceditBinaryPath();
+    if (bundledRceditPath) {
+      childEnv.HTML2EXE_RCEDIT_PATH = bundledRceditPath;
+      onLog(`已检测到 rcedit: ${bundledRceditPath}\n`);
+    } else {
+      onLog("警告: 未检测到 rcedit，afterPack 将无法写入 Windows 可执行文件图标。\n");
+    }
   }
 
   for (const arch of parseArchFlags(normalizedForm.arches)) {

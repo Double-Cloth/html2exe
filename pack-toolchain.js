@@ -13,7 +13,8 @@ const pkg = {
   version: "1.0.0",
   private: true,
   dependencies: {
-    "electron-builder": "26.8.1"
+    "electron-builder": "26.8.1",
+    "rcedit": "4.0.1"
   }
 };
 fs.writeFileSync(path.join(vendorDir, 'package.json'), JSON.stringify(pkg, null, 2));
