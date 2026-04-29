@@ -67,7 +67,7 @@ npm run start
 
 `npm run dev` 与 `npm run start` 是等价的，都会直接启动 Electron 应用。
 
-### 构建当前工具
+### 构建当前工具 （自打包）
 
 ```bash
 npm run build
