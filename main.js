@@ -955,15 +955,38 @@ function createPersistentPortableNsiScript(script) {
     throw new Error("当前 electron-builder portable.nsi 模板结构不匹配，无法启用当前目录持久化绿色版。");
   }
 
-  const withPersistentDir = source.replace(tempDirBlockPattern, persistentDirBlock);
+  const withVisibleProgress = source
+    .replace(
+      /(AutoCloseWindow\s+True[^\S\r\n]*(?:\r?\n))/,
+      'LoadLanguageFile "${NSISDIR}\\Contrib\\Language files\\English.nlf"\n$1'
+    )
+    .replace(
+      /(AutoCloseWindow\s+True[^\S\r\n]*(?:\r?\n))/,
+      "$1ShowInstDetails show\n"
+    )
+    .replace(
+      /(RequestExecutionLevel\s+\$\{REQUEST_EXECUTION_LEVEL\}[^\S\r\n]*(?:\r?\n))/,
+      "$1Page instfiles\n"
+    )
+    .replace(
+      /([ \t]*)!ifndef SPLASH_IMAGE[^\S\r\n]*(?:\r?\n)[ \t]*SetSilent silent[^\S\r\n]*(?:\r?\n)[ \t]*!endif/,
+      "$1; Self-extract mode shows the extraction progress window."
+    );
+  const withPersistentDir = withVisibleProgress.replace(tempDirBlockPattern, persistentDirBlock);
+  const launchAppPattern =
+    /^([ \t]*)ExecWait\s+"\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}[^"]*"\s+\$0[^\S\r\n]*(?:\r?\n[ \t]*SetErrorLevel\s+\$0[^\S\r\n]*)?/m;
+  const withoutLaunch = withPersistentDir.replace(
+    launchAppPattern,
+    "$1; Self-extract mode does not launch the app after extraction."
+  );
   const exitCleanupPattern = /([ \t]*SetOutPath \$EXEDIR[^\S\r\n]*(?:\r?\n)(?:[ \t]*(?:\r?\n))*)([ \t]*)RMDir \/r \$INSTDIR(?=\r?\n|$)/;
-  if (!exitCleanupPattern.test(withPersistentDir)) {
+  if (!exitCleanupPattern.test(withoutLaunch)) {
     throw new Error("当前 electron-builder portable.nsi 未找到退出清理语句，无法安全 patch。");
   }
 
-  return withPersistentDir.replace(
+  return withoutLaunch.replace(
     exitCleanupPattern,
-    "$1$2; persistent portable mode keeps unpacked files beside the executable."
+    "$1$2RMDir /r \"$$PLUGINSDIR\"\n$2MessageBox MB_OK \"Extraction complete.\"\n$2; persistent portable mode keeps unpacked files beside the executable."
   );
 }
 
@@ -1541,6 +1564,21 @@ function toAuthorText(author) {
   return "";
 }
 
+function toAuthorMetadata(author) {
+  if (!author) {
+    return undefined;
+  }
+  if (typeof author === "string") {
+    const name = author.trim();
+    return name ? { name } : undefined;
+  }
+  if (typeof author === "object") {
+    const name = typeof author.name === "string" ? author.name.trim() : "";
+    return name ? { ...author, name } : undefined;
+  }
+  return undefined;
+}
+
 function parseBuildTargetNames(rawTarget) {
   if (!rawTarget) {
     return [];
@@ -1701,7 +1739,7 @@ function buildTargetConfig(form) {
     extraMetadata: {
       version: form.version || undefined,
       description: form.description || undefined,
-      author: form.author || undefined,
+      author: toAuthorMetadata(form.author),
     },
     electronVersion: form.electronVersion || undefined,
   };

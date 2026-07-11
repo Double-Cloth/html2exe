@@ -22,10 +22,22 @@ test("npm build defaults to persistent Windows portable output", () => {
 test("self build wrapper patches portable template for Windows builds", () => {
   const selfBuild = require("../scripts/build-self");
   const template = [
+    "AutoCloseWindow True",
+    "RequestExecutionLevel ${REQUEST_EXECUTION_LEVEL}",
+    "Function .onInit",
+    "  !ifndef SPLASH_IMAGE",
+    "    SetSilent silent",
+    "  !endif",
+    "FunctionEnd",
+    "Section",
     ' StrCpy $INSTDIR "$PLUGINSDIR\\app"',
     " !ifdef UNPACK_DIR_NAME",
     ' StrCpy $INSTDIR "$TEMP\\${UNPACK_DIR_NAME}"',
     " !endif",
+    " RMDir /r $INSTDIR",
+    " SetOutPath $INSTDIR",
+    ' ExecWait "$INSTDIR\\${APP_EXECUTABLE_FILENAME} $R0" $0',
+    " SetErrorLevel $0",
     " SetOutPath $EXEDIR",
     "\tRMDir /r $INSTDIR",
     "SectionEnd",
@@ -36,7 +48,16 @@ test("self build wrapper patches portable template for Windows builds", () => {
   assert.equal(selfBuild.shouldPatchPortableTemplate(["--win"], "linux"), true);
 
   const patched = selfBuild.createPersistentPortableNsiScript(template);
+  assert.match(patched, /LoadLanguageFile "\$\{NSISDIR\}\\Contrib\\Language files\\English\.nlf"/);
+  assert.match(patched, /ShowInstDetails show/);
+  assert.match(patched, /Page instfiles/);
+  assert.doesNotMatch(patched, /SetSilent silent/);
   assert.match(patched, /\$EXEDIR\\\$\{UNPACK_DIR_NAME\}/);
+  assert.doesNotMatch(patched, /ExecWait "\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}/);
+  assert.doesNotMatch(patched, /SetErrorLevel \$0/);
+  assert.match(patched, /RMDir \/r "\$PLUGINSDIR"/);
+  assert.match(patched, /MessageBox MB_OK "Extraction complete\."/);
+  assert.doesNotMatch(patched, /[\u4e00-\u9fff]/);
   assert.doesNotMatch(patched.slice(patched.indexOf(" SetOutPath $EXEDIR")), /[ \t]+RMDir \/r \$INSTDIR/);
 });
 

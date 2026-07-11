@@ -244,6 +244,27 @@ test("Windows portable unpack directory avoids reserved device names", () => {
   assert.equal(config.portable.unpackDirName, "CON-app");
 });
 
+test("custom organization is emitted as author metadata object", () => {
+  const context = loadMainContext();
+
+  const config = context.buildTargetConfig({
+    version: "1.2.3",
+    author: "Acme Corp",
+    description: "Desktop packaging tool",
+    compression: "normal",
+    asar: true,
+    npmRebuild: false,
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(config.extraMetadata)), {
+    version: "1.2.3",
+    author: {
+      name: "Acme Corp",
+    },
+    description: "Desktop packaging tool",
+  });
+});
+
 test("portable template patch is only needed for Windows portable builds", () => {
   const context = loadMainContext();
   const config = context.buildTargetConfig({
@@ -284,6 +305,14 @@ test("portable template patch is only needed for Windows portable builds", () =>
 test("persistent portable NSIS script extracts beside exe and keeps files after exit", () => {
   const context = loadMainContext();
   const template = [
+    "AutoCloseWindow True",
+    "RequestExecutionLevel ${REQUEST_EXECUTION_LEVEL}",
+    "Function .onInit",
+    "  !ifndef SPLASH_IMAGE",
+    "    SetSilent silent",
+    "  !endif",
+    "FunctionEnd",
+    "Section",
     ' StrCpy $INSTDIR "$PLUGINSDIR\\app"',
     " !ifdef UNPACK_DIR_NAME",
     ' StrCpy $INSTDIR "$TEMP\\${UNPACK_DIR_NAME}"',
@@ -299,8 +328,17 @@ test("persistent portable NSIS script extracts beside exe and keeps files after 
 
   const patched = context.createPersistentPortableNsiScript(template);
 
+  assert.match(patched, /LoadLanguageFile "\$\{NSISDIR\}\\Contrib\\Language files\\English\.nlf"/);
+  assert.match(patched, /ShowInstDetails show/);
+  assert.match(patched, /Page instfiles/);
+  assert.doesNotMatch(patched, /SetSilent silent/);
   assert.match(patched, /\$EXEDIR\\\$\{UNPACK_DIR_NAME\}/);
   assert.doesNotMatch(patched, /\$TEMP\\\$\{UNPACK_DIR_NAME\}/);
+  assert.doesNotMatch(patched, /ExecWait "\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}/);
+  assert.doesNotMatch(patched, /SetErrorLevel \$0/);
+  assert.match(patched, /RMDir \/r "\$PLUGINSDIR"/);
+  assert.match(patched, /MessageBox MB_OK "Extraction complete\."/);
+  assert.doesNotMatch(patched, /[\u4e00-\u9fff]/);
   assert.match(patched, /persistent portable mode keeps unpacked files/);
   assert.equal((patched.match(/RMDir \/r \$INSTDIR/g) || []).length, 1);
 });
