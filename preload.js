@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("builderApi", {
+  getAppVersion: () => ipcRenderer.invoke("app:getVersion"),
   pickProjectDir: () => ipcRenderer.invoke("dialog:pickProject"),
   pickOutputDir: () => ipcRenderer.invoke("dialog:pickOutput"),
   pickIconFile: (extensions) => ipcRenderer.invoke("dialog:pickIcon", extensions),

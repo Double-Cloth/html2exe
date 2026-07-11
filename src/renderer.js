@@ -79,6 +79,7 @@ const dom = {
   saveConfigBtn: document.getElementById("saveConfigBtn"),
   clearCacheBtn: document.getElementById("clearCacheBtn"),
   loadProjectDefaultsBtn: document.getElementById("loadProjectDefaultsBtn"),
+  appVersion: document.getElementById("appVersion"),
   clearLogBtn: document.getElementById("clearLogBtn"),
   pickProjectBtn: document.getElementById("pickProjectBtn"),
   pickOutputBtn: document.getElementById("pickOutputBtn"),
@@ -681,9 +682,8 @@ async function saveConfig() {
 }
 
 async function saveRuntimeOverridesSnapshot() {
-  const current = await window.builderApi.loadSettings();
   const merged = {
-    ...(current || {}),
+    ...gatherFormState(),
     electronVersion: (document.getElementById("electronVersion")?.value || "").trim(),
     chromiumVersion: (document.getElementById("chromiumVersion")?.value || "").trim(),
     nodeVersion: (document.getElementById("nodeVersion")?.value || "").trim(),
@@ -860,6 +860,15 @@ async function clearCache() {
 async function init() {
   const isConfigPage = Boolean(document.getElementById("tab-basic"));
   const isOutputPage = Boolean(dom.logOutput);
+
+  if (dom.appVersion) {
+    try {
+      const version = await window.builderApi.getAppVersion();
+      dom.appVersion.textContent = `v${String(version || "").trim() || "未知"}`;
+    } catch (error) {
+      dom.appVersion.textContent = "v未知";
+    }
+  }
 
   const saved = await window.builderApi.loadSettings();
   if (isConfigPage) {

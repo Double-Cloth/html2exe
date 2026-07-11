@@ -2840,6 +2840,10 @@ ipcMain.handle("settings:load", async () => {
   };
 });
 
+ipcMain.handle("app:getVersion", async () => {
+  return app.getVersion();
+});
+
 ipcMain.handle("settings:save", async (_, settings) => {
   const current = await readSettings();
   await writeSettings({
