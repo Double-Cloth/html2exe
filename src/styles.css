@@ -108,6 +108,21 @@ html, body {
   letter-spacing: 1px;
 }
 
+.brand-version {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 12px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(15, 134, 83, 0.12);
+  border: 1px solid rgba(15, 134, 83, 0.18);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+
 .nav-menu {
   flex: 1;
   padding: 20px 16px;
