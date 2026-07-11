@@ -170,6 +170,49 @@ test("首次追加日志时会清理输出页初始占位文本", () => {
   assert.doesNotMatch(text, /打包器已就绪待命中/);
 });
 
+test("运行时版本字段自动保存时会保留当前表单的其它设置", async () => {
+  const context = loadRendererContext();
+  let savedPayload = null;
+
+  const textField = (id, value) => {
+    const el = new FakeElement(id);
+    el.type = "text";
+    el.value = value;
+    context.__elements.set(id, el);
+    return el;
+  };
+
+  const checkboxField = (id, checked) => {
+    const el = new FakeElement(id);
+    el.type = "checkbox";
+    el.checked = checked;
+    context.__elements.set(id, el);
+    return el;
+  };
+
+  textField("productName", "新应用");
+  textField("electronVersion", "41.2.0");
+  textField("chromiumVersion", "134.0.6998");
+  textField("nodeVersion", "22.13.1");
+  checkboxField("clearRuntimeOverridesAfterBuild", true);
+  checkboxField("targetLinux", true);
+
+  context.window.builderApi.saveSettings = async (payload) => {
+    savedPayload = payload;
+    return { success: true };
+  };
+
+  await context.saveRuntimeOverridesSnapshot();
+
+  assert.ok(savedPayload);
+  assert.equal(savedPayload.productName, "新应用");
+  assert.equal(savedPayload.targetLinux, true);
+  assert.equal(savedPayload.electronVersion, "41.2.0");
+  assert.equal(savedPayload.chromiumVersion, "134.0.6998");
+  assert.equal(savedPayload.nodeVersion, "22.13.1");
+  assert.equal(savedPayload.clearRuntimeOverridesAfterBuild, true);
+});
+
 test("按钮忙碌状态结束后会恢复原始图标和文案", () => {
   const context = loadRendererContext();
   const button = new FakeElement("saveConfigBtn");

@@ -682,9 +682,8 @@ async function saveConfig() {
 }
 
 async function saveRuntimeOverridesSnapshot() {
-  const current = await window.builderApi.loadSettings();
   const merged = {
-    ...(current || {}),
+    ...gatherFormState(),
     electronVersion: (document.getElementById("electronVersion")?.value || "").trim(),
     chromiumVersion: (document.getElementById("chromiumVersion")?.value || "").trim(),
     nodeVersion: (document.getElementById("nodeVersion")?.value || "").trim(),
