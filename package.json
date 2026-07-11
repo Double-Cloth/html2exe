@@ -4,10 +4,11 @@
   "description": "图形化 Electron 打包器",
   "main": "main.js",
   "scripts": {
-    "prebuild": "node pack-toolchain.js",
+    "prebuild": "node scripts/pack-toolchain.js",
     "start": "electron .",
     "dev": "electron .",
-    "build": "electron-builder"
+    "test": "node --test",
+    "build": "node scripts/build-self.js"
   },
   "keywords": [],
   "author": "",
@@ -21,10 +22,22 @@
     "asar": false,
     "compression": "maximum",
     "npmRebuild": false,
-    "afterPack": "./afterPack.js",
+    "afterPack": "./scripts/afterPack.js",
+    "icon": "src/assets/images/icon.png",
+    "win": {
+      "icon": "src/assets/images/icon.ico",
+      "target": [
+        "portable"
+      ]
+    },
+    "portable": {
+      "unpackDirName": "html2exe",
+      "requestExecutionLevel": "user"
+    },
     "files": [
       "main.js",
       "preload.js",
+      "scripts/**/*",
       "src/**/*",
       "package.json",
       "!**/*.map",

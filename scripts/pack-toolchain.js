@@ -2,7 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const cp = require('child_process');
 
-const vendorDir = path.join(__dirname, 'vendor', 'toolchain');
+const projectRoot = path.resolve(__dirname, '..');
+const vendorDir = path.join(projectRoot, 'vendor', 'toolchain');
 if (fs.existsSync(vendorDir)) {
   fs.rmSync(vendorDir, { recursive: true, force: true });
 }

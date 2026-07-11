@@ -4,6 +4,8 @@
 
 这个项目目前更接近一个“打包工作台”而不是单纯的启动器。它关注的是打包配置整理、构建执行、日志反馈和缓存管理，而不是接管业务项目本身的编译流程。
 
+一句话概括：准备好一个 Electron 项目或静态 HTML 目录，选择目标平台和产物类型，然后让工具生成对应的桌面应用包。
+
 ## 适用场景
 
 `html2exe` 适合以下工作模式：
@@ -25,6 +27,7 @@
 - 构建过程支持实时日志、步骤状态、整体状态与取消操作。
 - 配置可持久化保存，重启后自动恢复。
 - 纯 HTML 目录可自动补全为临时 Electron 工程。
+- Windows 绿色版 `portable` 输出为单个自解压 EXE，默认解压到 EXE 当前目录下的同名子文件夹，并在程序退出后保留该文件夹。
 - 内置并缓存 electron-builder 与 npm，降低目标机器上的环境依赖。
 - 独立输出页用于集中查看打包过程和结果。
 
@@ -56,6 +59,22 @@
 
 这种页面拆分的设计目的是将“配置”和“执行”分离，降低构建过程中反复切页和查找状态的成本。
 
+## 目录结构
+
+```text
+.
+├── main.js                 # Electron 主进程入口
+├── preload.js              # 渲染进程受控 API 暴露
+├── scripts/                # 自打包、工具链准备和 afterPack 脚本
+├── src/                    # 界面页面、样式、渲染层逻辑和静态资源
+├── test/                   # node:test 回归测试
+├── vendor/                 # prebuild 生成的内置工具链，不提交
+├── dist/                   # electron-builder 产物，不提交
+└── .cache/                 # 开发期缓存，不提交
+```
+
+`main.js` 和 `preload.js` 仍保留在根目录，是为了保持 Electron 入口、打包后的资源定位以及现有 `__dirname` 路径逻辑稳定。构建辅助脚本统一放在 `scripts/`，减少根目录噪音。
+
 ## 快速开始
 
 ### 本地运行
@@ -67,13 +86,23 @@ npm run start
 
 `npm run dev` 与 `npm run start` 是等价的，都会直接启动 Electron 应用。
 
+### 测试
+
+```bash
+npm test
+```
+
+测试使用 Node.js 内置的 `node:test`，覆盖主进程配置生成、绿色版模板 patch、渲染层日志与按钮状态等回归场景。
+
 ### 构建当前工具 （自打包）
 
 ```bash
 npm run build
 ```
 
-构建命令会先执行 `prebuild`，由 `pack-toolchain.js` 生成或刷新 `vendor/toolchain`，再交给 `electron-builder` 产出安装包。
+构建命令会先执行 `prebuild`，由 `scripts/pack-toolchain.js` 生成或刷新 `vendor/toolchain`，再通过 `scripts/build-self.js` 调用 `electron-builder`。在 Windows 上默认产出 `portable` 绿色自解压 EXE，双击后解压到 EXE 当前目录下的 `html2exe` 子文件夹，并在程序退出后保留该文件夹。
+
+自打包时会先把 electron-builder 的临时输出目录切到系统临时目录下的 `html2exe-self-build/<本次构建>`，构建成功后再把顶层 EXE 发布到 `dist`。这样可以避开编辑器、资源管理器或工作区索引器对项目目录内大量解压文件的持续扫描。`scripts/electron-builder-runner.js` 还会在 electron-builder 进程内为 Windows 下容易被安全软件或索引器短暂占用的 `rename` 操作增加重试，降低 `win-unpacked.tmp` 重命名失败的概率。
 
 ## 典型使用流程
 
@@ -129,7 +158,7 @@ npm run build
 ### Windows 参数
 
 - `winTargets`：Windows 构建目标，例如 `nsis`、`portable`、`zip`。
-- `winPortable`：额外输出便携版。
+- `winPortable`：在 `winTargets` 之外额外追加 `portable` 绿色版目标。
 - `publisherName`：发布者信息。
 - `nsisOneClick`：是否启用单击安装。
 - `nsisPerMachine`：是否按机器范围安装。
@@ -140,6 +169,18 @@ npm run build
 - `nsisDeleteAppData`：卸载时是否删除应用数据。
 
 这部分参数主要用于控制 Windows 安装体验。对于需要标准安装器、绿色单文件版或压缩包分发的项目，这些选项很关键。
+
+#### Windows 绿色版 portable 行为
+
+选择 `portable` 目标或启用 `winPortable` 后，工具会按以下策略生成绿色版：
+
+- 产物仍然是一个自解压 EXE。
+- 双击运行时，默认在该 EXE 所在目录创建同名子文件夹。
+- 应用内容解压到该子文件夹中，而不是系统临时目录。
+- 程序退出后不删除解压目录，后续再次运行会复用并刷新该目录。
+- 子文件夹名称来源于 `executableName`，为空时回退到 `productName` 或 `appId`，并会自动替换 Windows 文件名中的非法字符。
+
+这样处理更符合“绿色软件”的直觉：用户可以把 EXE 放到任意目录运行，解压后的程序文件也留在同一位置，便于检查、备份或手动删除。
 
 ### Linux 参数
 
@@ -194,12 +235,12 @@ macOS 目标更偏向镜像式发布和归档分发。
 
 ### 打包阶段
 
-`pack-toolchain.js` 会在 `vendor/toolchain` 中准备构建依赖，当前包括：
+`scripts/pack-toolchain.js` 会在 `vendor/toolchain` 中准备构建依赖，当前包括：
 
 - `electron-builder@26.8.1`
 - `npm`
 
-随后，`afterPack.js` 会把 `vendor/toolchain/node_modules` 复制到应用资源目录中，以便运行时查找和恢复。
+随后，`scripts/afterPack.js` 会把 `vendor/toolchain/node_modules` 复制到应用资源目录中，以便运行时查找和恢复。
 
 ### 运行阶段的查找顺序
 
@@ -256,8 +297,11 @@ Windows 示例：`C:/Users/<用户名>/AppData/Roaming/html2exe/.cache`
 3. 纯 HTML 项目会先进入自动补全流程，生成临时工程结构。
 4. 主进程生成临时 electron-builder 配置。
 5. 系统解析可用的构建入口，优先使用内置和缓存工具链。
-6. 启动子进程执行构建，并把日志流式回传到界面。
-7. 构建完成后返回成功、失败或取消状态，并执行必要清理。
+6. 如果包含 Windows `portable` 目标，构建前会临时 patch `electron-builder` 的 portable NSIS 模板，让绿色版解压到 EXE 当前目录并保留文件。
+7. 启动子进程执行构建，并把日志流式回传到界面。
+8. 构建完成后返回成功、失败或取消状态，并执行必要清理；portable 模板会在构建结束后恢复。
+
+`npm run build` 自打包也会使用同一类 portable 模板 patch，只是入口在 `scripts/build-self.js`。这保证命令行默认构建和应用内构建的绿色版行为一致。
 
 ## 常见问题
 
@@ -274,6 +318,10 @@ npm run prebuild
 ### 清理缓存提示“部分清理，文件被占用”
 
 通常是系统进程、资源管理器预览窗格、杀毒软件或其他占用目标目录的程序导致。关闭相关进程后重试即可。
+
+### Windows 绿色版没有生成当前目录解压行为
+
+请确认 Windows 目标中包含 `portable`，或者启用了 `winPortable`。该能力依赖本地或缓存工具链中的 `electron-builder` CLI，并需要能定位到 `app-builder-lib/templates/nsis/portable.nsi`。如果只能回退到系统 `npx` / `npm exec` 且无法定位模板，程序会中止构建并给出错误，而不会静默生成行为不符合预期的绿色版。
 
 ## 开发与维护
 

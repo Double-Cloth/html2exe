@@ -30,7 +30,12 @@ const DEFAULT_PROJECT_ICON_CANDIDATES = [
   path.join(__dirname, "src", "assets", "images", "icon.png"),
   path.join(__dirname, "assets", "images", "icon.png"),
 ];
+const DEFAULT_MAC_ICON_CANDIDATES = [
+  path.join(__dirname, "src", "assets", "images", "icon.icns"),
+  path.join(__dirname, "assets", "images", "icon.icns"),
+];
 let cachedDefaultProjectIconPath = null;
+let cachedDefaultMacIconPath = null;
 const CACHE_PATHS = {
   appUserData: path.join(LOCAL_CACHE_ROOT, "electron", "user-data"),
   appCache: path.join(LOCAL_CACHE_ROOT, "electron", "cache"),
@@ -99,6 +104,34 @@ function resolveDefaultProjectIconPath() {
 
   cachedDefaultProjectIconPath = candidates.find((candidate) => fssync.existsSync(candidate)) || "";
   return cachedDefaultProjectIconPath;
+}
+
+function resolveDefaultMacIconPath() {
+  if (cachedDefaultMacIconPath !== null) {
+    return cachedDefaultMacIconPath;
+  }
+
+  const candidates = [...DEFAULT_MAC_ICON_CANDIDATES];
+
+  try {
+    const appPath = app.getAppPath();
+    if (appPath) {
+      candidates.push(path.join(appPath, "src", "assets", "images", "icon.icns"));
+      candidates.push(path.join(appPath, "assets", "images", "icon.icns"));
+    }
+  } catch (error) {}
+
+  try {
+    const resourcesPath = process.resourcesPath || "";
+    if (resourcesPath) {
+      candidates.push(path.join(resourcesPath, "app.asar.unpacked", "src", "assets", "images", "icon.icns"));
+      candidates.push(path.join(resourcesPath, "app", "src", "assets", "images", "icon.icns"));
+      candidates.push(path.join(resourcesPath, "src", "assets", "images", "icon.icns"));
+    }
+  } catch (error) {}
+
+  cachedDefaultMacIconPath = candidates.find((candidate) => fssync.existsSync(candidate)) || "";
+  return cachedDefaultMacIconPath;
 }
 
 function runCommandCapture(command, args, options = {}) {
@@ -678,7 +711,12 @@ async function cleanupLegacyTempArtifacts() {
   try {
     names = await fs.readdir(tempRoot);
   } catch (error) {
-    return;
+    return {
+      skipped: [],
+      autoRecovered: 0,
+      killedProcesses: 0,
+      unlockedBy: [],
+    };
   }
 
   const targets = names.filter(
@@ -873,6 +911,62 @@ function sanitizeName(name) {
     .replace(/^-|-$/g, "") || "html-app";
 }
 
+function sanitizeWindowsFileName(name, fallback = "html-app") {
+  const cleaned = String(name || "")
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, "-")
+    .replace(/\s+/g, " ")
+    .replace(/[. ]+$/g, "");
+
+  const safeName = cleaned || sanitizeName(fallback);
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(safeName)) {
+    return `${safeName}-app`;
+  }
+
+  return safeName;
+}
+
+function getPortableUnpackDirName(form) {
+  return sanitizeWindowsFileName(
+    form.executableName || form.productName || form.appId || "html-app",
+    form.productName || form.appId || "html-app"
+  );
+}
+
+function createPersistentPortableNsiScript(script) {
+  const source = String(script || "");
+  const flexibleNewline = "\\r?\\n\\s*";
+  const tempDirBlockPattern = new RegExp(
+    [
+      ' StrCpy \\$INSTDIR "\\$PLUGINSDIR\\\\app"',
+      "!ifdef UNPACK_DIR_NAME",
+      'StrCpy \\$INSTDIR "\\$TEMP\\\\\\$\\{UNPACK_DIR_NAME\\}"',
+      "!endif",
+    ].join(flexibleNewline)
+  );
+  const persistentDirBlock = [
+    ' StrCpy $INSTDIR "$PLUGINSDIR\\app"',
+    " !ifdef UNPACK_DIR_NAME",
+    ' StrCpy $INSTDIR "$EXEDIR\\${UNPACK_DIR_NAME}"',
+    " !endif",
+  ].join("\n");
+
+  if (!tempDirBlockPattern.test(source)) {
+    throw new Error("当前 electron-builder portable.nsi 模板结构不匹配，无法启用当前目录持久化绿色版。");
+  }
+
+  const withPersistentDir = source.replace(tempDirBlockPattern, persistentDirBlock);
+  const exitCleanupPattern = /([ \t]*SetOutPath \$EXEDIR[^\S\r\n]*(?:\r?\n)(?:[ \t]*(?:\r?\n))*)([ \t]*)RMDir \/r \$INSTDIR(?=\r?\n|$)/;
+  if (!exitCleanupPattern.test(withPersistentDir)) {
+    throw new Error("当前 electron-builder portable.nsi 未找到退出清理语句，无法安全 patch。");
+  }
+
+  return withPersistentDir.replace(
+    exitCleanupPattern,
+    "$1$2; persistent portable mode keeps unpacked files beside the executable."
+  );
+}
+
 async function findFirstHtmlFile(rootDir) {
   const queue = [""];
   while (queue.length > 0) {
@@ -916,7 +1010,7 @@ function getDefaultFormSettings() {
   return {
     winIcon: resolveDefaultProjectIconPath(),
     linuxIcon: resolveDefaultProjectIconPath(),
-    macIcon: resolveDefaultProjectIconPath(),
+    macIcon: resolveDefaultMacIconPath(),
     electronVersion: localElectronVersion,
     chromiumVersion: "",
     nodeVersion: "",
@@ -1234,6 +1328,79 @@ function resolveLocalBuilderCliPath() {
   return "";
 }
 
+function resolvePortableTemplatePathFromBuilderCli(builderCliPath) {
+  if (!builderCliPath) {
+    return "";
+  }
+
+  const builderPackageRoot = resolveBuilderPackageRootFromCli(builderCliPath);
+  if (!builderPackageRoot) {
+    return "";
+  }
+
+  const nodeModulesRoot = path.dirname(builderPackageRoot);
+  const candidates = [
+    path.join(nodeModulesRoot, "app-builder-lib", "templates", "nsis", "portable.nsi"),
+    path.join(builderPackageRoot, "node_modules", "app-builder-lib", "templates", "nsis", "portable.nsi"),
+  ];
+
+  return candidates.find((candidate) => fssync.existsSync(candidate)) || "";
+}
+
+async function applyPersistentPortableTemplatePatch(launcher, config, onLog = noop) {
+  if (!config || !config.portable) {
+    return async () => {};
+  }
+
+  const templatePath = resolvePortableTemplatePathFromBuilderCli(launcher && launcher.builderCliPath);
+  if (!templatePath) {
+    throw new Error("已选择 Windows 绿色版 portable，但当前构建器入口无法定位 portable.nsi 模板，无法生成当前目录持久化自解压 EXE。");
+  }
+
+  const originalScript = await fs.readFile(templatePath, "utf-8");
+  const patchedScript = createPersistentPortableNsiScript(originalScript);
+  if (patchedScript === originalScript) {
+    return async () => {};
+  }
+
+  await fs.writeFile(templatePath, patchedScript, "utf-8");
+  onLog(`已启用绿色版自解压策略: ${templatePath}\n`);
+
+  let restored = false;
+  return async () => {
+    if (restored) {
+      return;
+    }
+    restored = true;
+    await fs.writeFile(templatePath, originalScript, "utf-8");
+  };
+}
+
+function shouldPatchPersistentPortableTemplate(form, config, platform = process.platform) {
+  if (!config || !config.portable) {
+    return false;
+  }
+
+  const winTargets = Array.isArray(config.win && config.win.target)
+    ? config.win.target
+    : parseCommaList(config.win && config.win.target);
+  const hasPortableTarget = winTargets.some((target) => String(target || "").toLowerCase() === "portable");
+  if (!hasPortableTarget) {
+    return false;
+  }
+
+  if (form && form.targetWindows) {
+    return true;
+  }
+
+  const hasExplicitPlatform =
+    Boolean(form && form.targetWindows) ||
+    Boolean(form && form.targetLinux) ||
+    Boolean(form && form.targetMac);
+
+  return !hasExplicitPlatform && platform === "win32";
+}
+
 async function resolveBuilderLauncher(runtime, onLog = noop) {
   const localBuilderCli = resolveLocalBuilderCliPath();
 
@@ -1262,6 +1429,7 @@ async function resolveBuilderLauncher(runtime, onLog = noop) {
       command: runtime.command,
       prefixArgs: getSafePrefixArgs(localBuilderCli),
       mode: runtime.mode,
+      builderCliPath: localBuilderCli,
       description: "本地 electron-builder CLI（" + runtime.mode + "）",
     };
   }
@@ -1276,6 +1444,7 @@ async function resolveBuilderLauncher(runtime, onLog = noop) {
           command: runtime.command,
           prefixArgs: getSafePrefixArgs(cachedBuilderCli),
           mode: runtime.mode,
+          builderCliPath: cachedBuilderCli,
           description: "缓存工具链 electron-builder CLI",
         };
       }
@@ -1436,7 +1605,7 @@ async function inspectProjectDefaults(projectDirInput) {
         windowAlwaysOnTop: false,
         winIcon: resolveDefaultProjectIconPath(),
         linuxIcon: resolveDefaultProjectIconPath(),
-        macIcon: resolveDefaultProjectIconPath(),
+        macIcon: resolveDefaultMacIconPath(),
       },
       mode: "html-only",
       htmlEntry,
@@ -1497,7 +1666,7 @@ async function inspectProjectDefaults(projectDirInput) {
       windowAlwaysOnTop: false,
       winIcon: resolveDefaultProjectIconPath(),
       linuxIcon: resolveDefaultProjectIconPath(),
-      macIcon: resolveDefaultProjectIconPath(),
+      macIcon: resolveDefaultMacIconPath(),
     },
     mode: "electron-project",
   };
@@ -1567,6 +1736,13 @@ function buildTargetConfig(form) {
         : undefined,
     deleteAppDataOnUninstall: Boolean(form.nsisDeleteAppData),
   };
+
+  if (winTargets.some((target) => target.toLowerCase() === "portable")) {
+    config.portable = {
+      unpackDirName: getPortableUnpackDirName(form),
+      requestExecutionLevel: "user",
+    };
+  }
 
   config.linux = {
     icon: form.linuxIcon || undefined,
@@ -2348,7 +2524,17 @@ async function runBuild(form, onLog, onStatus = noop) {
     CACHE_PATHS.builderTemp,
     `electron-builder-ui-${Date.now()}.json`
   );
-  await fs.writeFile(tempConfigPath, JSON.stringify(config, null, 2), "utf-8");
+  const launcher = await resolveBuilderLauncher(runtime, onLog);
+  const restorePortableTemplate = shouldPatchPersistentPortableTemplate(normalizedForm, config)
+    ? await applyPersistentPortableTemplatePatch(launcher, config, onLog)
+    : async () => {};
+
+  try {
+    await fs.writeFile(tempConfigPath, JSON.stringify(config, null, 2), "utf-8");
+  } catch (error) {
+    await restorePortableTemplate();
+    throw error;
+  }
 
   const args = [
     "build",
@@ -2357,7 +2543,6 @@ async function runBuild(form, onLog, onStatus = noop) {
     "--config",
     tempConfigPath,
   ];
-  const launcher = await resolveBuilderLauncher(runtime, onLog);
 
   const childEnv = {
     ...process.env,
@@ -2473,6 +2658,12 @@ async function runBuild(form, onLog, onStatus = noop) {
         await rmWithRetry(tempConfigPath, { force: true });
       } catch (error) {
         onLog(`清理临时配置文件失败（已忽略）: ${error.message}\n`);
+      }
+
+      try {
+        await restorePortableTemplate();
+      } catch (error) {
+        onLog(`恢复绿色版构建模板失败（已忽略）: ${error.message}\n`);
       }
 
       try {
