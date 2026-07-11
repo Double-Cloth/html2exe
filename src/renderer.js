@@ -177,6 +177,10 @@ const BUILD_PRESETS = {
 let isBuilding = false;
 let actionFeedbackTimer = null;
 
+function isLogPlaceholder(text) {
+  return ["等待开始...", "打包器已就绪待命中，随时候命..."].includes(String(text || "").trim());
+}
+
 const stepDefaults = {
   prepare: "等待开始",
   "temp-project": "按需执行",
@@ -215,7 +219,8 @@ function setButtonBusy(button, busy, busyText, idleText) {
   if (!button) {
     return;
   }
-  if (!button.dataset.idleText) {
+  if (!("idleHtml" in button.dataset)) {
+    button.dataset.idleHtml = button.innerHTML;
     button.dataset.idleText = idleText || button.textContent;
   }
   if (busy) {
@@ -227,7 +232,11 @@ function setButtonBusy(button, busy, busyText, idleText) {
 
   button.classList.remove("is-busy");
   button.disabled = false;
-  button.textContent = button.dataset.idleText;
+  if (button.dataset.idleHtml) {
+    button.innerHTML = button.dataset.idleHtml;
+  } else {
+    button.textContent = button.dataset.idleText;
+  }
 }
 
 function appendLog(line, kind = "normal") {
@@ -235,7 +244,7 @@ function appendLog(line, kind = "normal") {
     return;
   }
   const stamp = new Date().toLocaleTimeString("zh-CN", { hour12: false });
-  if (dom.logOutput.textContent === "等待开始...") {
+  if (isLogPlaceholder(dom.logOutput.textContent)) {
     dom.logOutput.textContent = "";
   }
   dom.logOutput.textContent += `[${stamp}] ${line}`;
