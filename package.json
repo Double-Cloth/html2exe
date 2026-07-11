@@ -1,6 +1,6 @@
 {
   "name": "html2exe",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "图形化 Electron 打包器",
   "main": "main.js",
   "scripts": {
