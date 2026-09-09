@@ -13,7 +13,7 @@
         <div class="brand">
           <h1>html2exe</h1>
           <p>Electron 打包器</p>
-          <div id="appVersion" class="brand-version" aria-label="应用版本号">v2.0.3</div>
+          <div id="appVersion" class="brand-version" aria-label="应用版本号">v2.0.5</div>
         </div>
         <nav class="nav-menu">
           <button class="nav-item active" data-tab="basic"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg> 基础配置</button>
@@ -120,44 +120,47 @@
             <div class="grid three-col">
               <div class="field-row">
                 <label for="electronVersion">Electron 版本</label>
-                <input id="electronVersion" type="text" list="electronVersionOptions" placeholder="选择或输入，如 41.2.0；留空使用本地默认" />
+                <input id="electronVersion" type="text" list="electronVersionOptions" placeholder="选择或输入，如 44.3.0；留空使用本地默认" />
                 <datalist id="electronVersionOptions">
-                  <option value="41.2.0"></option>
-                  <option value="40.3.0"></option>
-                  <option value="39.4.0"></option>
-                  <option value="38.6.0"></option>
-                  <option value="37.5.0"></option>
-                  <option value="36.4.0"></option>
+                  <option value="44.3.0" label="最新稳定版"></option>
+                  <option value="43.6.0" label="上一稳定主版本"></option>
+                  <option value="42.11.3" label="维护版本"></option>
+                  <option value="41.10.7" label="历史兼容版本"></option>
+                  <option value="40.10.6" label="历史兼容版本"></option>
+                  <option value="39.8.10" label="历史兼容版本"></option>
                 </datalist>
               </div>
               <div class="field-row">
                 <label for="chromiumVersion">Chromium 版本覆盖 (高级)</label>
-                <input id="chromiumVersion" type="text" list="chromiumVersionOptions" placeholder="选择或输入，如 134.0.6998，可留空" />
+                <input id="chromiumVersion" type="text" list="chromiumVersionOptions" placeholder="选择或输入，如 152.0.7977.78，可留空" />
                 <datalist id="chromiumVersionOptions">
-                  <option value="138.0.7204"></option>
-                  <option value="136.0.7103"></option>
-                  <option value="134.0.6998"></option>
-                  <option value="132.0.6834"></option>
-                  <option value="130.0.6723"></option>
-                  <option value="128.0.6613"></option>
+                  <option value="152.0.7977.78" label="Electron 44.3.0 内置"></option>
+                  <option value="150.0.7871.250" label="Electron 43.6.0 内置"></option>
+                  <option value="148.0.7778.280" label="Electron 42.11.3 内置"></option>
+                  <option value="146.0.7680.216" label="Electron 41.10.7 内置"></option>
+                  <option value="144.0.7559.236" label="Electron 40.10.6 内置"></option>
+                  <option value="142.0.7444.265" label="Electron 39.8.10 内置"></option>
                 </datalist>
               </div>
               <div class="field-row">
                 <label for="nodeVersion">Node.js 版本覆盖 (高级)</label>
-                <input id="nodeVersion" type="text" list="nodeVersionOptions" placeholder="选择或输入，如 22.13.1，可留空" />
+                <input id="nodeVersion" type="text" list="nodeVersionOptions" placeholder="选择或输入，如 24.21.0，可留空" />
                 <datalist id="nodeVersionOptions">
-                  <option value="24.2.0"></option>
-                  <option value="22.13.1"></option>
-                  <option value="22.12.0"></option>
-                  <option value="20.18.1"></option>
-                  <option value="20.16.0"></option>
-                  <option value="18.20.4"></option>
+                  <option value="26.8.1" label="最新 Current"></option>
+                  <option value="24.21.0" label="最新 LTS (Krypton)"></option>
+                  <option value="24.20.0" label="Electron 44/43 内置"></option>
+                  <option value="24.19.0" label="Electron 42 内置"></option>
+                  <option value="24.18.0" label="Electron 41 内置"></option>
+                  <option value="24.15.0" label="Electron 40 内置"></option>
+                  <option value="22.23.2" label="Node.js 22 LTS (Jod)"></option>
+                  <option value="22.22.1" label="Electron 39 内置"></option>
                 </datalist>
               </div>
             </div>
             <div class="field-row">
               <label>说明</label>
               <input type="text" value="Chromium/Node.js 覆盖会以环境变量注入构建流程，适用于原生依赖编译与自定义脚本控制。" readonly />
+              <p id="runtimeVersionsHint" class="preset-hint">启动时自动检查官方版本，离线时使用最近缓存或内置候选。</p>
             </div>
             <div class="field-row checkbox-row">
               <label for="clearRuntimeOverridesAfterBuild">打包结束后自动清空高级版本字段（Electron/Chromium/Node.js）</label>

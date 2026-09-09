@@ -7,7 +7,13 @@ const repoRoot = path.resolve(__dirname, "..");
 
 test("npm build defaults to persistent Windows portable output", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf-8"));
+  const lock = JSON.parse(fs.readFileSync(path.join(repoRoot, "package-lock.json"), "utf-8"));
+  const indexHtml = fs.readFileSync(path.join(repoRoot, "src", "index.html"), "utf-8");
 
+  assert.equal(pkg.version, "2.0.5");
+  assert.equal(lock.version, pkg.version);
+  assert.equal(lock.packages[""].version, pkg.version);
+  assert.match(indexHtml, new RegExp(`>v${pkg.version.replaceAll(".", "\\.")}<`));
   assert.equal(pkg.scripts.prebuild, "node scripts/pack-toolchain.js");
   assert.equal(pkg.scripts.build, "node scripts/build-self.js");
   assert.equal(pkg.build.afterPack, "./scripts/afterPack.js");
@@ -17,6 +23,24 @@ test("npm build defaults to persistent Windows portable output", () => {
   assert.equal(pkg.build.portable.unpackDirName, "html2exe");
   assert.equal(pkg.build.portable.requestExecutionLevel, "user");
   assert.ok(pkg.build.files.includes("scripts/**/*"));
+});
+
+test("内置运行时版本候选与当前 Electron 稳定版本保持同步", () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf-8"));
+  const indexHtml = fs.readFileSync(path.join(repoRoot, "src", "index.html"), "utf-8");
+  const mainSource = fs.readFileSync(path.join(repoRoot, "main.js"), "utf-8");
+
+  assert.equal(pkg.devDependencies.electron, "^44.3.0");
+  assert.match(mainSource, /return "44\.3\.0";/);
+  ["44.3.0", "43.6.0", "42.11.3"].forEach((version) => {
+    assert.match(indexHtml, new RegExp(`<option value="${version.replaceAll(".", "\\.")}"`));
+  });
+  ["152.0.7977.78", "150.0.7871.250", "148.0.7778.280"].forEach((version) => {
+    assert.match(indexHtml, new RegExp(`<option value="${version.replaceAll(".", "\\.")}"`));
+  });
+  ["26.8.1", "24.21.0", "24.20.0"].forEach((version) => {
+    assert.match(indexHtml, new RegExp(`<option value="${version.replaceAll(".", "\\.")}"`));
+  });
 });
 
 test("self build wrapper patches portable template for Windows builds", () => {

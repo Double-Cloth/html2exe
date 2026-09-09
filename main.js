@@ -56,6 +56,39 @@ const CACHE_PATHS = {
   npmCache: path.join(LOCAL_CACHE_ROOT, "builder", "npm-cache"),
   toolchainRoot: path.join(LOCAL_CACHE_ROOT, "builder", "toolchain"),
 };
+const RUNTIME_VERSION_CACHE_PATH = path.join(CACHE_PATHS.appCache, "runtime-versions.json");
+const RUNTIME_VERSION_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const RUNTIME_VERSION_REQUEST_TIMEOUT_MS = 8000;
+const ELECTRON_RELEASES_URL = "https://releases.electronjs.org/releases.json";
+const NODE_RELEASES_URL = "https://nodejs.org/dist/index.json";
+const DEFAULT_RUNTIME_VERSION_OPTIONS = {
+  electron: [
+    { value: "44.3.0", label: "最新稳定版" },
+    { value: "43.6.0", label: "上一稳定主版本" },
+    { value: "42.11.3", label: "维护版本" },
+    { value: "41.10.7", label: "历史兼容版本" },
+    { value: "40.10.6", label: "历史兼容版本" },
+    { value: "39.8.10", label: "历史兼容版本" },
+  ],
+  chromium: [
+    { value: "152.0.7977.78", label: "Electron 44.3.0 内置" },
+    { value: "150.0.7871.250", label: "Electron 43.6.0 内置" },
+    { value: "148.0.7778.280", label: "Electron 42.11.3 内置" },
+    { value: "146.0.7680.216", label: "Electron 41.10.7 内置" },
+    { value: "144.0.7559.236", label: "Electron 40.10.6 内置" },
+    { value: "142.0.7444.265", label: "Electron 39.8.10 内置" },
+  ],
+  node: [
+    { value: "26.8.1", label: "最新 Current" },
+    { value: "24.21.0", label: "最新 LTS (Krypton)" },
+    { value: "24.20.0", label: "Electron 44/43 内置" },
+    { value: "24.19.0", label: "Electron 42 内置" },
+    { value: "24.18.0", label: "Electron 41 内置" },
+    { value: "24.15.0", label: "Electron 40 内置" },
+    { value: "22.23.2", label: "Node.js 22 LTS (Jod)" },
+    { value: "22.22.1", label: "Electron 39 内置" },
+  ],
+};
 
 let cachedBuilderBootstrapPromise = null;
 
@@ -999,6 +1032,245 @@ function createPersistentPortableNsiScript(script) {
   );
 }
 
+function compareNumericVersionsDescending(left, right) {
+  const leftParts = String(left || "").split(".").map(Number);
+  const rightParts = String(right || "").split(".").map(Number);
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const difference = (rightParts[index] || 0) - (leftParts[index] || 0);
+    if (difference !== 0) {
+      return difference;
+    }
+  }
+  return 0;
+}
+
+function isStableThreePartVersion(value) {
+  return /^\d+\.\d+\.\d+$/.test(String(value || "").trim());
+}
+
+function isRuntimeOptionValue(value) {
+  return /^\d+\.\d+(?:\.\d+){1,2}$/.test(String(value || "").trim());
+}
+
+function cloneDefaultRuntimeVersionOptions() {
+  return Object.fromEntries(
+    Object.entries(DEFAULT_RUNTIME_VERSION_OPTIONS).map(([key, options]) => [
+      key,
+      options.map((option) => ({ ...option })),
+    ])
+  );
+}
+
+function createRuntimeVersionOptions(electronReleases, nodeReleases) {
+  const latestElectronByMajor = new Map();
+
+  (Array.isArray(electronReleases) ? electronReleases : []).forEach((release) => {
+    const version = String(release && release.version ? release.version : "").trim();
+    const chromium = String(release && (release.chrome || release.chromium) ? release.chrome || release.chromium : "").trim();
+    const node = String(release && release.node ? release.node : "").replace(/^v/, "").trim();
+    if (!isStableThreePartVersion(version) || !isRuntimeOptionValue(chromium) || !isStableThreePartVersion(node)) {
+      return;
+    }
+
+    const major = Number(version.split(".")[0]);
+    const existing = latestElectronByMajor.get(major);
+    if (!existing || compareNumericVersionsDescending(version, existing.version) < 0) {
+      latestElectronByMajor.set(major, { version, chromium, node });
+    }
+  });
+
+  const electronVersions = Array.from(latestElectronByMajor.values())
+    .sort((left, right) => compareNumericVersionsDescending(left.version, right.version))
+    .slice(0, 6);
+  if (electronVersions.length === 0) {
+    throw new Error("Electron 官方发布数据中没有可用的稳定版本。");
+  }
+
+  const electron = electronVersions.map((release, index) => ({
+    value: release.version,
+    label: index === 0 ? "最新稳定版" : index < 3 ? "当前维护版本" : "历史兼容版本",
+  }));
+  const chromium = electronVersions.map((release) => ({
+    value: release.chromium,
+    label: `Electron ${release.version} 内置`,
+  }));
+
+  const latestNodeByMajor = new Map();
+  (Array.isArray(nodeReleases) ? nodeReleases : []).forEach((release) => {
+    const version = String(release && release.version ? release.version : "").replace(/^v/, "").trim();
+    if (!isStableThreePartVersion(version)) {
+      return;
+    }
+
+    const major = Number(version.split(".")[0]);
+    const existing = latestNodeByMajor.get(major);
+    if (!existing || compareNumericVersionsDescending(version, existing.version) < 0) {
+      latestNodeByMajor.set(major, {
+        version,
+        lts: release.lts || false,
+      });
+    }
+  });
+
+  const officialNodeVersions = Array.from(latestNodeByMajor.values()).sort((left, right) =>
+    compareNumericVersionsDescending(left.version, right.version)
+  );
+  const latestNodeRelease = officialNodeVersions[0];
+  const latestLtsVersions = officialNodeVersions.filter((release) => release.lts).slice(0, 2);
+  if (!latestNodeRelease) {
+    throw new Error("Node.js 官方发布数据中没有可用版本。");
+  }
+
+  const node = [];
+  const nodeValues = new Set();
+  const addNodeOption = (value, label) => {
+    if (!isStableThreePartVersion(value) || nodeValues.has(value)) {
+      return;
+    }
+    nodeValues.add(value);
+    node.push({ value, label });
+  };
+
+  const latestNodeCodename =
+    typeof latestNodeRelease.lts === "string" ? ` (${latestNodeRelease.lts})` : "";
+  addNodeOption(
+    latestNodeRelease.version,
+    latestNodeRelease.lts ? `最新 LTS${latestNodeCodename}` : "最新 Current"
+  );
+  latestLtsVersions.forEach((release, index) => {
+    const codename = typeof release.lts === "string" ? ` (${release.lts})` : "";
+    addNodeOption(
+      release.version,
+      index === 0 ? `最新 LTS${codename}` : `Node.js ${release.version.split(".")[0]} LTS${codename}`
+    );
+  });
+
+  const electronMajorsByNode = new Map();
+  electronVersions.forEach((release) => {
+    const majors = electronMajorsByNode.get(release.node) || [];
+    majors.push(release.version.split(".")[0]);
+    electronMajorsByNode.set(release.node, majors);
+  });
+  electronMajorsByNode.forEach((majors, version) => {
+    addNodeOption(version, `Electron ${majors.join("/")} 内置`);
+  });
+
+  return { electron, chromium, node };
+}
+
+function normalizeCachedRuntimeVersionOptions(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const options = {};
+  for (const key of ["electron", "chromium", "node"]) {
+    if (!Array.isArray(value[key]) || value[key].length === 0) {
+      return null;
+    }
+    options[key] = value[key]
+      .filter((option) => option && isRuntimeOptionValue(option.value))
+      .map((option) => ({
+        value: String(option.value),
+        label: String(option.label || ""),
+      }));
+    if (options[key].length === 0) {
+      return null;
+    }
+  }
+  return options;
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs = RUNTIME_VERSION_REQUEST_TIMEOUT_MS) {
+  if (typeof fetch !== "function") {
+    throw new Error("当前运行时不支持网络版本检查。");
+  }
+
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  const timeout = setTimeout(() => controller && controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": `html2exe/${app.getVersion()}`,
+      },
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+    if (!response.ok) {
+      throw new Error(`版本服务返回 HTTP ${response.status}。`);
+    }
+    return response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function readRuntimeVersionOptionsCache() {
+  try {
+    const parsed = JSON.parse(await fs.readFile(RUNTIME_VERSION_CACHE_PATH, "utf-8"));
+    const options = normalizeCachedRuntimeVersionOptions(parsed && parsed.options);
+    const updatedAt = Date.parse(parsed && parsed.updatedAt ? parsed.updatedAt : "");
+    if (!options || !Number.isFinite(updatedAt)) {
+      return null;
+    }
+    return { options, updatedAt };
+  } catch (error) {
+    return null;
+  }
+}
+
+async function writeRuntimeVersionOptionsCache(options) {
+  await fs.mkdir(path.dirname(RUNTIME_VERSION_CACHE_PATH), { recursive: true });
+  const updatedAt = new Date().toISOString();
+  await fs.writeFile(
+    RUNTIME_VERSION_CACHE_PATH,
+    JSON.stringify({ updatedAt, options }, null, 2),
+    "utf-8"
+  );
+  return updatedAt;
+}
+
+async function getRuntimeVersionOptions() {
+  const cached = await readRuntimeVersionOptionsCache();
+  if (cached && Date.now() - cached.updatedAt < RUNTIME_VERSION_CACHE_TTL_MS) {
+    return {
+      ...cached.options,
+      source: "cache",
+      updatedAt: new Date(cached.updatedAt).toISOString(),
+    };
+  }
+
+  try {
+    const [electronReleases, nodeReleases] = await Promise.all([
+      fetchJsonWithTimeout(ELECTRON_RELEASES_URL),
+      fetchJsonWithTimeout(NODE_RELEASES_URL),
+    ]);
+    const options = createRuntimeVersionOptions(electronReleases, nodeReleases);
+    let updatedAt = new Date().toISOString();
+    try {
+      updatedAt = await writeRuntimeVersionOptionsCache(options);
+    } catch (error) {
+      // 缓存写入失败不应阻止使用已经获取到的官方版本数据。
+    }
+    return { ...options, source: "remote", updatedAt };
+  } catch (error) {
+    if (cached) {
+      return {
+        ...cached.options,
+        source: "stale-cache",
+        updatedAt: new Date(cached.updatedAt).toISOString(),
+      };
+    }
+    return {
+      ...cloneDefaultRuntimeVersionOptions(),
+      source: "fallback",
+      updatedAt: null,
+    };
+  }
+}
+
 async function findFirstHtmlFile(rootDir) {
   const queue = [""];
   while (queue.length > 0) {
@@ -1336,7 +1608,7 @@ function resolveLocalElectronVersion() {
     // Ignore and fallback to fixed default.
   }
 
-  return "41.2.0";
+  return "44.3.0";
 }
 
 function normalizeVersionInput(raw) {
@@ -1743,6 +2015,121 @@ function normalizeLinuxPackageMetadata(form, pkg, onLog = noop) {
     homepage,
     linuxMaintainer,
   };
+}
+
+// 纯 HTML 模式会关闭 electron-builder 的默认 EXE 资源编辑以兼容受限 Windows 环境，
+// 因此需要在 afterPack 中统一补写页面配置的版本资源，避免保留 Electron 的 GitHub 元数据。
+function createHtmlOnlyAfterPackHookContent() {
+  return [
+    "module.exports = async function afterPackPatchWindowsExeResources(context) {",
+    "  if (!context || context.electronPlatformName !== \"win32\") {",
+    "    return;",
+    "  }",
+    "",
+    "  const fs = require(\"node:fs\");",
+    "  const path = require(\"node:path\");",
+    "  const { spawnSync } = require(\"node:child_process\");",
+    "",
+    "  const iconPath = String(process.env.HTML2EXE_WIN_ICON_PATH || \"\").trim();",
+    "  if (iconPath && (!fs.existsSync(iconPath) || path.extname(iconPath).toLowerCase() !== \".ico\")) {",
+    "    throw new Error(`[afterPack] Windows 图标不可用（需要存在的 .ico 文件）: ${iconPath}`);",
+    "  }",
+    "",
+    "  const rceditPath = String(process.env.HTML2EXE_RCEDIT_PATH || \"\").trim();",
+    "  if (!rceditPath || !fs.existsSync(rceditPath)) {",
+    "    throw new Error(`[afterPack] 未检测到可用的 rcedit: ${rceditPath || \"(空)\"}`);",
+    "  }",
+    "",
+    "  const appOutDir = context.appOutDir || \"\";",
+    "  if (!appOutDir || !fs.existsSync(appOutDir)) {",
+    "    throw new Error(`[afterPack] appOutDir 不存在: ${appOutDir || \"(空)\"}`);",
+    "  }",
+    "",
+    "  const appInfo = context.packager && context.packager.appInfo ? context.packager.appInfo : null;",
+    "  const preferredExeNames = [];",
+    "  if (appInfo && typeof appInfo.productFilename === \"string\" && appInfo.productFilename.trim()) {",
+    "    preferredExeNames.push(`${appInfo.productFilename}.exe`);",
+    "  }",
+    "  if (appInfo && typeof appInfo.productName === \"string\" && appInfo.productName.trim()) {",
+    "    preferredExeNames.push(`${appInfo.productName}.exe`);",
+    "  }",
+    "  if (appInfo && typeof appInfo.name === \"string\" && appInfo.name.trim()) {",
+    "    preferredExeNames.push(`${appInfo.name}.exe`);",
+    "  }",
+    "",
+    "  const uniqueNames = [...new Set(preferredExeNames.map((item) => item.trim()).filter(Boolean))];",
+    "  let exePath = \"\";",
+    "  for (const exeName of uniqueNames) {",
+    "    const candidate = path.join(appOutDir, exeName);",
+    "    if (fs.existsSync(candidate)) {",
+    "      exePath = candidate;",
+    "      break;",
+    "    }",
+    "  }",
+    "",
+    "  if (!exePath) {",
+    "    const exeCandidates = fs",
+    "      .readdirSync(appOutDir, { withFileTypes: true })",
+    "      .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(\".exe\"))",
+    "      .map((entry) => path.join(appOutDir, entry.name))",
+    "      .filter((candidate) => !path.basename(candidate).toLowerCase().startsWith(\"uninstall\"));",
+    "",
+    "    exeCandidates.sort((a, b) => {",
+    "      const statA = fs.statSync(a);",
+    "      const statB = fs.statSync(b);",
+    "      return statB.size - statA.size;",
+    "    });",
+    "",
+    "    exePath = exeCandidates[0] || \"\";",
+    "  }",
+    "",
+    "  if (!exePath) {",
+    "    throw new Error(`[afterPack] 未在输出目录中找到主程序 exe: ${appOutDir}`);",
+    "  }",
+    "",
+    "  const productName = String((appInfo && appInfo.productName) || \"Application\").trim() || \"Application\";",
+    "  const companyName = String((appInfo && appInfo.companyName) || productName).trim() || productName;",
+    "  const copyright = String((appInfo && appInfo.copyright) || companyName).trim() || companyName;",
+    "  const displayVersion = String((appInfo && (appInfo.shortVersion || appInfo.buildVersion || appInfo.version)) || \"1.0.0\").trim() || \"1.0.0\";",
+    "  const productDisplayVersion = String((appInfo && (appInfo.shortVersion || appInfo.version || appInfo.buildVersion)) || displayVersion).trim() || displayVersion;",
+    "  const windowsVersion = appInfo && typeof appInfo.getVersionInWeirdWindowsForm === \"function\"",
+    "    ? appInfo.getVersionInWeirdWindowsForm()",
+    "    : displayVersion;",
+    "  const productWindowsVersion = String((appInfo && appInfo.shortVersionWindows) || windowsVersion).trim() || windowsVersion;",
+    "  const args = [",
+    "    exePath,",
+    "    \"--set-file-version\",",
+    "    windowsVersion,",
+    "    \"--set-product-version\",",
+    "    productWindowsVersion,",
+    "  ];",
+    "  const versionStrings = {",
+    "    CompanyName: companyName,",
+    "    FileDescription: productName,",
+    "    ProductName: productName,",
+    "    LegalCopyright: copyright,",
+    "    FileVersion: displayVersion,",
+    "    ProductVersion: productDisplayVersion,",
+    "  };",
+    "  for (const [key, value] of Object.entries(versionStrings)) {",
+    "    args.push(\"--set-version-string\", key, value);",
+    "  }",
+    "  if (iconPath) {",
+    "    args.push(\"--set-icon\", iconPath);",
+    "  }",
+    "",
+    "  const result = spawnSync(rceditPath, args, { stdio: \"pipe\" });",
+    "  if (result.status !== 0) {",
+    "    const stderr = result.stderr ? result.stderr.toString() : \"\";",
+    "    const stdout = result.stdout ? result.stdout.toString() : \"\";",
+    "    const detail = (stderr || stdout || `exit status ${result.status}`).trim();",
+    "    throw new Error(`[afterPack] rcedit 写入 Windows 可执行文件资源失败: ${detail}`);",
+    "  }",
+    "",
+    "  console.log(`[afterPack] 已写入 Windows 可执行文件元数据${iconPath ? \"和图标\" : \"\"}: ${exePath}`);",
+    "};",
+    "",
+  ].join("\n");
 }
 
 function assertFpmAvailableForBuild(
@@ -2711,89 +3098,7 @@ async function runBuild(form, onLog, onStatus = noop) {
       "",
     ].join("\n");
 
-    const afterPackHookContent = [
-      "module.exports = async function afterPackPatchWindowsExeIcon(context) {",
-      "  if (!context || context.electronPlatformName !== \"win32\") {",
-      "    return;",
-      "  }",
-      "",
-      "  const fs = require(\"node:fs\");",
-      "  const path = require(\"node:path\");",
-      "  const { spawnSync } = require(\"node:child_process\");",
-      "",
-      "  const iconPath = String(process.env.HTML2EXE_WIN_ICON_PATH || \"\").trim();",
-      "  if (!iconPath) {",
-      "    return;",
-      "  }",
-      "",
-      "  if (!fs.existsSync(iconPath) || path.extname(iconPath).toLowerCase() !== \".ico\") {",
-      "    throw new Error(`[afterPack] Windows 图标不可用（需要存在的 .ico 文件）: ${iconPath}`);",
-      "  }",
-      "",
-      "  const rceditPath = String(process.env.HTML2EXE_RCEDIT_PATH || \"\").trim();",
-      "  if (!rceditPath || !fs.existsSync(rceditPath)) {",
-      "    throw new Error(`[afterPack] 未检测到可用的 rcedit: ${rceditPath || \"(空)\"}`);",
-      "  }",
-      "",
-      "  const appOutDir = context.appOutDir || \"\";",
-      "  if (!appOutDir || !fs.existsSync(appOutDir)) {",
-      "    throw new Error(`[afterPack] appOutDir 不存在: ${appOutDir || \"(空)\"}`);",
-      "  }",
-      "",
-      "  const appInfo = context.packager && context.packager.appInfo ? context.packager.appInfo : null;",
-      "  const preferredExeNames = [];",
-      "  if (appInfo && typeof appInfo.productFilename === \"string\" && appInfo.productFilename.trim()) {",
-      "    preferredExeNames.push(`${appInfo.productFilename}.exe`);",
-      "  }",
-      "  if (appInfo && typeof appInfo.productName === \"string\" && appInfo.productName.trim()) {",
-      "    preferredExeNames.push(`${appInfo.productName}.exe`);",
-      "  }",
-      "  if (appInfo && typeof appInfo.name === \"string\" && appInfo.name.trim()) {",
-      "    preferredExeNames.push(`${appInfo.name}.exe`);",
-      "  }",
-      "",
-      "  const uniqueNames = [...new Set(preferredExeNames.map((item) => item.trim()).filter(Boolean))];",
-      "  let exePath = \"\";",
-      "  for (const exeName of uniqueNames) {",
-      "    const candidate = path.join(appOutDir, exeName);",
-      "    if (fs.existsSync(candidate)) {",
-      "      exePath = candidate;",
-      "      break;",
-      "    }",
-      "  }",
-      "",
-      "  if (!exePath) {",
-      "    const exeCandidates = fs",
-      "      .readdirSync(appOutDir, { withFileTypes: true })",
-      "      .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(\".exe\"))",
-      "      .map((entry) => path.join(appOutDir, entry.name))",
-      "      .filter((candidate) => !path.basename(candidate).toLowerCase().startsWith(\"uninstall\"));",
-      "",
-      "    exeCandidates.sort((a, b) => {",
-      "      const statA = fs.statSync(a);",
-      "      const statB = fs.statSync(b);",
-      "      return statB.size - statA.size;",
-      "    });",
-      "",
-      "    exePath = exeCandidates[0] || \"\";",
-      "  }",
-      "",
-      "  if (!exePath) {",
-      "    throw new Error(`[afterPack] 未在输出目录中找到主程序 exe: ${appOutDir}`);",
-      "  }",
-      "",
-      "  const result = spawnSync(rceditPath, [exePath, \"--set-icon\", iconPath], { stdio: \"pipe\" });",
-      "  if (result.status !== 0) {",
-      "    const stderr = result.stderr ? result.stderr.toString() : \"\";",
-      "    const stdout = result.stdout ? result.stdout.toString() : \"\";",
-      "    const detail = (stderr || stdout || `exit status ${result.status}`).trim();",
-      "    throw new Error(`[afterPack] rcedit 写入图标失败: ${detail}`);",
-      "  }",
-      "",
-      "  console.log(`[afterPack] 已写入 Windows 可执行文件图标: ${exePath}`);",
-      "};",
-      "",
-    ].join("\n");
+    const afterPackHookContent = createHtmlOnlyAfterPackHookContent();
 
     await fs.writeFile(beforeBuildHookPath, beforeBuildHookContent, "utf-8");
     await fs.writeFile(afterPackHookPath, afterPackHookContent, "utf-8");
@@ -2939,17 +3244,17 @@ async function runBuild(form, onLog, onStatus = noop) {
 
   if (prepared.htmlOnly) {
     childEnv.CSC_IDENTITY_AUTO_DISCOVERY = "false";
+    const bundledRceditPath = resolveBundledRceditBinaryPath();
+    if (bundledRceditPath) {
+      childEnv.HTML2EXE_RCEDIT_PATH = bundledRceditPath;
+      onLog(`已检测到 rcedit，将用于写入主程序公司名、版本信息和可选图标: ${bundledRceditPath}\n`);
+    } else {
+      onLog("错误: 未检测到内置 rcedit；Windows 构建将在 afterPack 阶段中止。\n");
+    }
     const finalWindowsIconPath = config.win && typeof config.win.icon === "string" ? config.win.icon : "";
     if (finalWindowsIconPath) {
-      const bundledRceditPath = resolveBundledRceditBinaryPath();
       childEnv.HTML2EXE_WIN_ICON_PATH = finalWindowsIconPath;
       onLog(`已配置主程序图标强制写入: ${finalWindowsIconPath}\n`);
-      if (bundledRceditPath) {
-        childEnv.HTML2EXE_RCEDIT_PATH = bundledRceditPath;
-        onLog(`已检测到 rcedit: ${bundledRceditPath}\n`);
-      } else {
-        onLog("错误: 已配置 Windows 图标，但未检测到内置 rcedit；构建将在 afterPack 阶段中止。\n");
-      }
     }
   }
 
@@ -3157,6 +3462,10 @@ ipcMain.handle("settings:load", async () => {
 
 ipcMain.handle("app:getVersion", async () => {
   return app.getVersion();
+});
+
+ipcMain.handle("runtime:getVersionOptions", async () => {
+  return getRuntimeVersionOptions();
 });
 
 ipcMain.handle("settings:save", async (_, settings) => {

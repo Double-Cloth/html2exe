@@ -86,6 +86,7 @@ const dom = {
   clearCacheBtn: document.getElementById("clearCacheBtn"),
   loadProjectDefaultsBtn: document.getElementById("loadProjectDefaultsBtn"),
   appVersion: document.getElementById("appVersion"),
+  runtimeVersionsHint: document.getElementById("runtimeVersionsHint"),
   clearLogBtn: document.getElementById("clearLogBtn"),
   pickProjectBtn: document.getElementById("pickProjectBtn"),
   pickOutputBtn: document.getElementById("pickOutputBtn"),
@@ -109,6 +110,59 @@ const dom = {
   buildSteps: document.getElementById("buildSteps"),
   actionFeedback: document.getElementById("actionFeedback"),
 };
+
+function replaceRuntimeVersionOptions(datalistId, options) {
+  const datalist = document.getElementById(datalistId);
+  if (!datalist || !Array.isArray(options) || options.length === 0) {
+    return false;
+  }
+
+  datalist.innerHTML = "";
+  options.forEach((item) => {
+    if (!item || typeof item.value !== "string" || !item.value.trim()) {
+      return;
+    }
+    const option = document.createElement("option");
+    option.value = item.value.trim();
+    option.label = typeof item.label === "string" ? item.label : "";
+    datalist.appendChild(option);
+  });
+  return true;
+}
+
+function applyRuntimeVersionOptions(payload) {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+
+  const updated = [
+    replaceRuntimeVersionOptions("electronVersionOptions", payload.electron),
+    replaceRuntimeVersionOptions("chromiumVersionOptions", payload.chromium),
+    replaceRuntimeVersionOptions("nodeVersionOptions", payload.node),
+  ].some(Boolean);
+
+  if (dom.runtimeVersionsHint) {
+    const updatedAt = payload.updatedAt ? new Date(payload.updatedAt).toLocaleString("zh-CN") : "";
+    if (payload.source === "remote") {
+      dom.runtimeVersionsHint.textContent = `版本候选已从官方源自动更新${updatedAt ? `（${updatedAt}）` : ""}。`;
+    } else if (payload.source === "cache") {
+      dom.runtimeVersionsHint.textContent = `版本候选来自自动更新缓存${updatedAt ? `（${updatedAt}）` : ""}。`;
+    } else if (payload.source === "stale-cache") {
+      dom.runtimeVersionsHint.textContent = `当前无法连接官方源，已使用最近缓存${updatedAt ? `（${updatedAt}）` : ""}。`;
+    } else {
+      dom.runtimeVersionsHint.textContent = "当前无法连接官方源，已使用内置版本候选。";
+    }
+  }
+  return updated;
+}
+
+async function refreshRuntimeVersionOptions() {
+  if (typeof window.builderApi.getRuntimeVersionOptions !== "function") {
+    return;
+  }
+  const options = await window.builderApi.getRuntimeVersionOptions();
+  applyRuntimeVersionOptions(options);
+}
 
 const BUILD_PRESETS = {
   release: {
@@ -561,13 +615,13 @@ function validateBeforeBuild(payload) {
     return "版本号格式建议为 x.y.z，例如 1.0.0。";
   }
   if (!isRuntimeVersionLike(payload.electronVersion)) {
-    return "Electron 版本格式无效，请使用如 41.2.0。";
+    return "Electron 版本格式无效，请使用如 44.3.0。";
   }
   if (!isRuntimeVersionLike(payload.chromiumVersion)) {
-    return "Chromium 版本格式无效，请使用如 134.0.6998。";
+    return "Chromium 版本格式无效，请使用如 152.0.7977.78。";
   }
   if (!isRuntimeVersionLike(payload.nodeVersion)) {
-    return "Node.js 版本格式无效，请使用如 22.13.1。";
+    return "Node.js 版本格式无效，请使用如 24.21.0。";
   }
   const invalidArches = getInvalidArches(payload.arches);
   if (invalidArches.length > 0) {
@@ -984,6 +1038,11 @@ async function init() {
       setPresetHint(presetFromSaved);
       syncTargetDependentControls();
     }
+    refreshRuntimeVersionOptions().catch(() => {
+      if (dom.runtimeVersionsHint) {
+        dom.runtimeVersionsHint.textContent = "版本自动更新暂不可用，已保留内置候选。";
+      }
+    });
   }
   resetProgressView();
   setActionFeedback("准备就绪。", "success", 1500);

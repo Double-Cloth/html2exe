@@ -43,6 +43,8 @@ class FakeElement {
     this.defaultChecked = false;
     this.scrollTop = 0;
     this.scrollHeight = 0;
+    this.children = [];
+    this.label = "";
     this.listeners = new Map();
     this._innerHTML = "";
     this._textContent = "";
@@ -55,6 +57,9 @@ class FakeElement {
   set innerHTML(value) {
     this._innerHTML = String(value || "");
     this._textContent = this._innerHTML.replace(/<[^>]*>/g, "");
+    if (!this._innerHTML) {
+      this.children = [];
+    }
   }
 
   get textContent() {
@@ -70,6 +75,11 @@ class FakeElement {
     this.listeners.set(type, callback);
   }
 
+  appendChild(child) {
+    this.children.push(child);
+    return child;
+  }
+
   querySelectorAll() {
     return [];
   }
@@ -83,6 +93,11 @@ function createDocument(elements) {
   return {
     getElementById(id) {
       return elements.get(id) || null;
+    },
+    createElement(tagName) {
+      const element = new FakeElement();
+      element.tagName = String(tagName || "").toUpperCase();
+      return element;
     },
     querySelectorAll() {
       return [];
@@ -140,6 +155,7 @@ function loadMainContext() {
           app: {
             isPackaged: false,
             getPath: (name) => path.join(repoRoot, ".test-cache", name),
+            getVersion: () => "2.0.5",
             setPath: () => {},
             getName: () => "html2exe",
             getAppPath: () => repoRoot,
@@ -195,9 +211,9 @@ test("运行时版本字段自动保存时会保留当前表单的其它设置",
   };
 
   textField("productName", "新应用");
-  textField("electronVersion", "41.2.0");
-  textField("chromiumVersion", "134.0.6998");
-  textField("nodeVersion", "22.13.1");
+  textField("electronVersion", "44.3.0");
+  textField("chromiumVersion", "152.0.7977.78");
+  textField("nodeVersion", "24.21.0");
   checkboxField("clearRuntimeOverridesAfterBuild", true);
   checkboxField("targetLinux", true);
 
@@ -211,9 +227,9 @@ test("运行时版本字段自动保存时会保留当前表单的其它设置",
   assert.ok(savedPayload);
   assert.equal(savedPayload.productName, "新应用");
   assert.equal(savedPayload.targetLinux, true);
-  assert.equal(savedPayload.electronVersion, "41.2.0");
-  assert.equal(savedPayload.chromiumVersion, "134.0.6998");
-  assert.equal(savedPayload.nodeVersion, "22.13.1");
+  assert.equal(savedPayload.electronVersion, "44.3.0");
+  assert.equal(savedPayload.chromiumVersion, "152.0.7977.78");
+  assert.equal(savedPayload.nodeVersion, "24.21.0");
   assert.equal(savedPayload.clearRuntimeOverridesAfterBuild, true);
 });
 
@@ -235,6 +251,63 @@ test("默认 macOS 图标不会回退到 PNG 文件", () => {
   const defaults = context.getDefaultFormSettings();
 
   assert.ok(!defaults.macIcon || defaults.macIcon.toLowerCase().endsWith(".icns"));
+});
+
+test("官方运行时版本数据会转换为最新候选并过滤预发布版本", () => {
+  const context = loadMainContext();
+  const options = context.createRuntimeVersionOptions(
+    [
+      { version: "45.0.0-alpha.1", chrome: "155.0.1.2", node: "24.21.0" },
+      { version: "44.3.0", chrome: "152.0.7977.78", node: "24.20.0" },
+      { version: "44.2.0", chrome: "152.0.7977.60", node: "24.20.0" },
+      { version: "43.6.0", chrome: "150.0.7871.250", node: "24.20.0" },
+      { version: "42.11.3", chrome: "148.0.7778.280", node: "24.19.0" },
+    ],
+    [
+      { version: "v26.8.1", lts: false },
+      { version: "v26.8.0", lts: false },
+      { version: "v24.21.0", lts: "Krypton" },
+      { version: "v22.23.2", lts: "Jod" },
+    ]
+  );
+
+  assert.deepEqual(
+    Array.from(options.electron, (option) => option.value),
+    ["44.3.0", "43.6.0", "42.11.3"]
+  );
+  assert.deepEqual(
+    Array.from(options.chromium, (option) => option.value),
+    ["152.0.7977.78", "150.0.7871.250", "148.0.7778.280"]
+  );
+  assert.deepEqual(
+    Array.from(options.node, (option) => option.value),
+    ["26.8.1", "24.21.0", "22.23.2", "24.20.0", "24.19.0"]
+  );
+});
+
+test("渲染层自动更新版本候选时不会改写版本输入框", () => {
+  const context = loadRendererContext();
+  const electronInput = new FakeElement("electronVersion");
+  electronInput.value = "43.6.0";
+  context.__elements.set("electronVersion", electronInput);
+
+  ["electronVersionOptions", "chromiumVersionOptions", "nodeVersionOptions"].forEach((id) => {
+    context.__elements.set(id, new FakeElement(id));
+  });
+
+  const updated = context.applyRuntimeVersionOptions({
+    electron: [{ value: "44.4.0", label: "最新稳定版" }],
+    chromium: [{ value: "152.0.8000.1", label: "Electron 44.4.0 内置" }],
+    node: [{ value: "26.9.0", label: "最新 Current" }],
+    source: "remote",
+    updatedAt: "2026-09-09T00:00:00.000Z",
+  });
+
+  assert.equal(updated, true);
+  assert.equal(electronInput.value, "43.6.0");
+  assert.equal(context.__elements.get("electronVersionOptions").children[0].value, "44.4.0");
+  assert.equal(context.__elements.get("chromiumVersionOptions").children[0].value, "152.0.8000.1");
+  assert.equal(context.__elements.get("nodeVersionOptions").children[0].value, "26.9.0");
 });
 
 test("默认 Windows 图标直接使用有效 ICO 文件", () => {
@@ -359,11 +432,11 @@ test("重置表单会恢复默认预设并应用主进程动态默认值", () =>
   electronVersion.value = "旧版本";
   context.__elements.set("electronVersion", electronVersion);
 
-  context.resetFormToDefaults({ electronVersion: "41.2.1" });
+  context.resetFormToDefaults({ electronVersion: "44.3.0" });
 
   assert.equal(productName.value, "");
   assert.equal(compression.value, "normal");
-  assert.equal(electronVersion.value, "41.2.1");
+  assert.equal(electronVersion.value, "44.3.0");
 });
 
 test("历史临时目录枚举失败时返回空清理结果", async () => {
@@ -455,6 +528,78 @@ test("custom organization is emitted as author metadata object", () => {
     },
     description: "Desktop packaging tool",
   });
+});
+
+test("纯 HTML Windows 构建会把页面公司名和版本写入解压后的主程序", async () => {
+  const context = loadMainContext();
+  const hookModule = { exports: {} };
+  let invocation = null;
+  const fakeFs = {
+    existsSync: () => true,
+  };
+
+  vm.runInNewContext(context.createHtmlOnlyAfterPackHookContent(), {
+    console: { log: () => {} },
+    module: hookModule,
+    process: {
+      env: {
+        HTML2EXE_RCEDIT_PATH: "C:\\tools\\rcedit.exe",
+      },
+    },
+    require(request) {
+      if (request === "node:fs") {
+        return fakeFs;
+      }
+      if (request === "node:path") {
+        return path;
+      }
+      if (request === "node:child_process") {
+        return {
+          spawnSync(command, args, options) {
+            invocation = { command, args, options };
+            return { status: 0 };
+          },
+        };
+      }
+      throw new Error(`unexpected require: ${request}`);
+    },
+  });
+
+  await hookModule.exports({
+    electronPlatformName: "win32",
+    appOutDir: "C:\\release\\win-unpacked",
+    packager: {
+      appInfo: {
+        productFilename: "Demo",
+        productName: "示例应用",
+        name: "demo",
+        companyName: "示例公司",
+        copyright: "Copyright © 2026 示例公司",
+        version: "1.2.3",
+        buildVersion: "1.2.3",
+        getVersionInWeirdWindowsForm: () => "1.2.3.0",
+      },
+    },
+  });
+
+  assert.ok(invocation);
+  assert.equal(invocation.command, "C:\\tools\\rcedit.exe");
+  assert.deepEqual(Array.from(invocation.args.slice(1, 5)), [
+    "--set-file-version",
+    "1.2.3.0",
+    "--set-product-version",
+    "1.2.3.0",
+  ]);
+
+  const versionStrings = new Map();
+  for (let index = 5; index < invocation.args.length; index += 3) {
+    assert.equal(invocation.args[index], "--set-version-string");
+    versionStrings.set(invocation.args[index + 1], invocation.args[index + 2]);
+  }
+  assert.equal(versionStrings.get("CompanyName"), "示例公司");
+  assert.equal(versionStrings.get("ProductName"), "示例应用");
+  assert.equal(versionStrings.get("FileVersion"), "1.2.3");
+  assert.equal(versionStrings.get("ProductVersion"), "1.2.3");
 });
 
 test("Linux package metadata includes homepage, author email, and maintainer", () => {
