@@ -237,6 +237,15 @@ test("默认 macOS 图标不会回退到 PNG 文件", () => {
   assert.ok(!defaults.macIcon || defaults.macIcon.toLowerCase().endsWith(".icns"));
 });
 
+test("开发环境可以定位随项目安装的 rcedit", () => {
+  const context = loadMainContext();
+  const rceditPath = context.resolveBundledRceditBinaryPath();
+
+  assert.ok(rceditPath, "应能定位 rcedit.exe");
+  assert.equal(path.basename(rceditPath).toLowerCase(), "rcedit.exe");
+  assert.equal(fs.existsSync(rceditPath), true);
+});
+
 test("配置导出格式可以完整解析并保留字段", () => {
   const context = loadMainContext();
   const exported = context.createSettingsExport({
@@ -370,6 +379,22 @@ test("Windows portable unpack directory avoids reserved device names", () => {
   assert.equal(config.portable.unpackDirName, "CON-app");
 });
 
+test("Windows publisher name is emitted under signtool options", () => {
+  const context = loadMainContext();
+
+  const config = context.buildTargetConfig({
+    publisherName: "Acme Corp",
+    compression: "normal",
+    asar: true,
+    npmRebuild: false,
+  });
+
+  assert.equal(Object.hasOwn(config.win, "publisherName"), false);
+  assert.deepEqual(JSON.parse(JSON.stringify(config.win.signtoolOptions)), {
+    publisherName: "Acme Corp",
+  });
+});
+
 test("custom organization is emitted as author metadata object", () => {
   const context = loadMainContext();
 
@@ -389,6 +414,136 @@ test("custom organization is emitted as author metadata object", () => {
     },
     description: "Desktop packaging tool",
   });
+});
+
+test("Linux package metadata includes homepage, author email, and maintainer", () => {
+  const context = loadMainContext();
+
+  const config = context.buildTargetConfig({
+    version: "1.2.3",
+    author: "Acme Corp",
+    authorEmail: "release@acme.example",
+    homepage: "https://acme.example/desktop",
+    linuxTargets: "deb",
+    linuxMaintainer: "Acme Release Team <release@acme.example>",
+    compression: "normal",
+    asar: true,
+    npmRebuild: false,
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(config.extraMetadata.author)), {
+    name: "Acme Corp",
+    email: "release@acme.example",
+  });
+  assert.equal(config.extraMetadata.homepage, "https://acme.example/desktop");
+  assert.equal(config.linux.maintainer, "Acme Release Team <release@acme.example>");
+});
+
+test("FPM targets receive reserved placeholder metadata when optional fields are blank", () => {
+  const context = loadMainContext();
+  const logs = [];
+
+  const normalized = context.normalizeLinuxPackageMetadata(
+    {
+      targetLinux: true,
+      linuxTargets: "AppImage, deb",
+      productName: "Whalgebra",
+      author: "",
+      authorEmail: "",
+      homepage: "",
+    },
+    { name: "whalgebra" },
+    (message) => logs.push(message)
+  );
+
+  assert.equal(normalized.author, "Whalgebra");
+  assert.equal(normalized.authorEmail, "noreply@example.invalid");
+  assert.equal(normalized.homepage, "https://example.invalid/whalgebra");
+  assert.equal(normalized.linuxMaintainer, "Whalgebra <noreply@example.invalid>");
+  assert.match(logs.join(""), /已使用 example\.invalid 占位元数据/);
+});
+
+test("FPM targets preserve manifest homepage and author email", () => {
+  const context = loadMainContext();
+  const logs = [];
+
+  const normalized = context.normalizeLinuxPackageMetadata(
+    {
+      targetLinux: true,
+      linuxTargets: "rpm",
+      author: "",
+      authorEmail: "",
+      homepage: "",
+    },
+    {
+      name: "desktop-app",
+      author: "Release Team <release@example.com>",
+      homepage: "https://example.com/desktop-app",
+    },
+    (message) => logs.push(message)
+  );
+
+  assert.equal(normalized.author, "Release Team");
+  assert.equal(normalized.authorEmail, "release@example.com");
+  assert.equal(normalized.homepage, "https://example.com/desktop-app");
+  assert.equal(normalized.linuxMaintainer, "Release Team <release@example.com>");
+  assert.deepEqual(logs, []);
+});
+
+test("Windows builds reject FPM Linux targets before electron-builder starts", () => {
+  const context = loadMainContext();
+
+  assert.throws(
+    () =>
+      context.assertFpmAvailableForBuild(
+        {
+          targetLinux: true,
+          linuxTargets: "AppImage, deb, rpm",
+        },
+        {
+          platform: "win32",
+          env: {},
+          commandExists: () => false,
+        }
+      ),
+    /Windows.*deb, rpm.*未检测到 fpm/
+  );
+});
+
+test("Windows builds accept FPM targets when a custom executable exists", () => {
+  const context = loadMainContext();
+
+  assert.doesNotThrow(() =>
+    context.assertFpmAvailableForBuild(
+      {
+        targetLinux: true,
+        linuxTargets: "deb",
+      },
+      {
+        platform: "win32",
+        env: { CUSTOM_FPM_PATH: __filename },
+        commandExists: () => false,
+      }
+    )
+  );
+});
+
+test("FPM preflight does not affect non-FPM or native Linux builds", () => {
+  const context = loadMainContext();
+  const missingCommand = () => false;
+
+  assert.doesNotThrow(() =>
+    context.assertFpmAvailableForBuild(
+      { targetLinux: true, linuxTargets: "AppImage" },
+      { platform: "win32", env: {}, commandExists: missingCommand }
+    )
+  );
+  assert.doesNotThrow(() =>
+    context.assertFpmAvailableForBuild(
+      { targetLinux: true, linuxTargets: "deb" },
+      { platform: "linux", env: {}, commandExists: missingCommand }
+    )
+  );
 });
 
 test("portable template patch is only needed for Windows portable builds", () => {

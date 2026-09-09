@@ -26,6 +26,7 @@ const SETTINGS_EXPORT_VERSION = 1;
 const SETTINGS_IMPORT_MAX_BYTES = 1024 * 1024;
 const ELECTRON_BUILDER_VERSION = "26.8.1";
 const ELECTRON_BUILDER_BINARIES_MIRROR_DEFAULT = "https://npmmirror.com/mirrors/electron-builder-binaries/";
+const FPM_LINUX_TARGETS = new Set(["deb", "rpm", "sh", "freebsd", "pacman", "p5p", "apk"]);
 const LOCAL_CACHE_ROOT = app.isPackaged
   ? path.join(app.getPath("appData"), app.getName() || "html2exe", ".cache")
   : path.join(__dirname, ".cache");
@@ -1609,31 +1610,144 @@ async function readProjectManifest(projectDir) {
 }
 
 function toAuthorText(author) {
-  if (!author) {
-    return "";
-  }
-  if (typeof author === "string") {
-    return author;
-  }
-  if (typeof author === "object") {
-    return author.name || "";
-  }
-  return "";
+  const metadata = toAuthorMetadata(author);
+  return metadata ? metadata.name : "";
 }
 
-function toAuthorMetadata(author) {
+function toAuthorEmail(author) {
+  const metadata = toAuthorMetadata(author);
+  return metadata && metadata.email ? metadata.email : "";
+}
+
+function toAuthorMetadata(author, emailOverride = "") {
   if (!author) {
     return undefined;
   }
+
+  const override = typeof emailOverride === "string" ? emailOverride.trim() : "";
   if (typeof author === "string") {
-    const name = author.trim();
-    return name ? { name } : undefined;
+    const value = author.trim();
+    const match = value.match(/^(.*?)\s*<([^<>]+)>/);
+    const name = (match ? match[1] : value).trim();
+    const email = override || (match ? match[2].trim() : "");
+    return name ? { name, ...(email ? { email } : {}) } : undefined;
   }
   if (typeof author === "object") {
     const name = typeof author.name === "string" ? author.name.trim() : "";
-    return name ? { ...author, name } : undefined;
+    const email = override || (typeof author.email === "string" ? author.email.trim() : "");
+    return name ? { ...author, name, ...(email ? { email } : {}) } : undefined;
   }
   return undefined;
+}
+
+function repositoryToHomepage(repository) {
+  const raw =
+    typeof repository === "string"
+      ? repository
+      : repository && typeof repository.url === "string"
+      ? repository.url
+      : "";
+  const value = raw.trim().replace(/^git\+/, "").replace(/\.git$/, "");
+  return /^https?:\/\//i.test(value) ? value : "";
+}
+
+function normalizeLinuxPackageMetadata(form, pkg, onLog = noop) {
+  const normalized = { ...form };
+  const needsFpmMetadata =
+    Boolean(normalized.targetLinux) &&
+    parseCommaList(normalized.linuxTargets).some((target) => FPM_LINUX_TARGETS.has(target.toLowerCase()));
+
+  if (!needsFpmMetadata) {
+    return normalized;
+  }
+
+  const manifest = pkg && typeof pkg === "object" ? pkg : {};
+  const manifestAuthor = toAuthorMetadata(manifest.author);
+  const fallbackName =
+    String(normalized.productName || manifest.productName || manifest.name || "Application").trim() ||
+    "Application";
+  const authorName =
+    String(normalized.author || "").trim() ||
+    (manifestAuthor ? manifestAuthor.name : "") ||
+    fallbackName;
+  let authorEmail =
+    String(normalized.authorEmail || "").trim() ||
+    (manifestAuthor && manifestAuthor.email ? manifestAuthor.email : "");
+  let homepage =
+    String(normalized.homepage || "").trim() ||
+    (typeof manifest.homepage === "string" ? manifest.homepage.trim() : "") ||
+    repositoryToHomepage(manifest.repository);
+  let linuxMaintainer =
+    String(normalized.linuxMaintainer || "").trim() ||
+    (manifest.build && manifest.build.linux && typeof manifest.build.linux.maintainer === "string"
+      ? manifest.build.linux.maintainer.trim()
+      : "");
+  const placeholderFields = [];
+
+  if (!authorEmail && !linuxMaintainer) {
+    authorEmail = "noreply@example.invalid";
+    placeholderFields.push("开发者邮箱");
+  }
+  if (!homepage) {
+    const packageSlug = encodeURIComponent(String(manifest.name || "application").trim() || "application");
+    homepage = `https://example.invalid/${packageSlug}`;
+    placeholderFields.push("项目主页");
+  }
+  if (!linuxMaintainer) {
+    linuxMaintainer = `${authorName} <${authorEmail}>`;
+  }
+
+  if (placeholderFields.length > 0) {
+    onLog(
+      `警告: Linux 系统包缺少 ${placeholderFields.join("、")}，已使用 example.invalid 占位元数据以继续构建；正式发布前请填写真实信息。\n`
+    );
+  }
+
+  return {
+    ...normalized,
+    author: authorName,
+    authorEmail,
+    homepage,
+    linuxMaintainer,
+  };
+}
+
+function assertFpmAvailableForBuild(
+  form,
+  {
+    platform = process.platform,
+    env = process.env,
+    commandExists = hasExecutable,
+    fileExists = fssync.existsSync,
+  } = {}
+) {
+  if (platform !== "win32" || !form || !form.targetLinux) {
+    return;
+  }
+
+  const requestedTargets = parseCommaList(form.linuxTargets);
+  const requestedFpmTargets = requestedTargets.filter((target) =>
+    FPM_LINUX_TARGETS.has(target.toLowerCase())
+  );
+  if (requestedFpmTargets.length === 0) {
+    return;
+  }
+
+  const customFpmPath = String((env && env.CUSTOM_FPM_PATH) || "").trim();
+  const customFpmAvailable = Boolean(customFpmPath) && fileExists(customFpmPath);
+  if (customFpmAvailable) {
+    return;
+  }
+  if (commandExists("fpm", ["--version"])) {
+    return;
+  }
+
+  throw new Error(
+    `当前在 Windows 上选择了需要 FPM 的 Linux 产物（${requestedFpmTargets.join(
+      ", "
+    )}），但未检测到 fpm。electron-builder 不会在 Windows 上自动提供该工具。` +
+      "请安装 fpm 并加入 PATH（或通过 CUSTOM_FPM_PATH 指定），或者在 Linux / electronuserland/builder Docker 环境中生成这些产物。"
+  );
 }
 
 function parseBuildTargetNames(rawTarget) {
@@ -1685,6 +1799,8 @@ async function inspectProjectDefaults(projectDirInput) {
         artifactName: "",
         version: "1.0.0",
         author: "",
+        authorEmail: "",
+        homepage: "",
         description: "",
         outputDir: "release",
         filesGlobs: "**/*\n!release/**",
@@ -1722,6 +1838,10 @@ async function inspectProjectDefaults(projectDirInput) {
       artifactName: build.artifactName || "",
       version: pkg.version || "",
       author: toAuthorText(pkg.author),
+      authorEmail: toAuthorEmail(pkg.author),
+      homepage:
+        (typeof pkg.homepage === "string" && pkg.homepage) ||
+        repositoryToHomepage(pkg.repository),
       description: pkg.description || "",
       outputDir:
         (build.directories && build.directories.output) || "release",
@@ -1735,6 +1855,10 @@ async function inspectProjectDefaults(projectDirInput) {
         (target) => target.toLowerCase() === "portable"
       ),
       linuxTargets: linuxTargetNames.join(", "),
+      linuxMaintainer:
+        build.linux && typeof build.linux.maintainer === "string"
+          ? build.linux.maintainer
+          : "",
       macTargets: macTargetNames.join(", "),
       filesGlobs: stringifyBuildArrayForForm(build.files),
       extraResources: stringifyBuildArrayForForm(build.extraResources),
@@ -1796,7 +1920,8 @@ function buildTargetConfig(form) {
     extraMetadata: {
       version: form.version || undefined,
       description: form.description || undefined,
-      author: toAuthorMetadata(form.author),
+      homepage: form.homepage || undefined,
+      author: toAuthorMetadata(form.author, form.authorEmail),
     },
     electronVersion: form.electronVersion || undefined,
   };
@@ -1814,7 +1939,9 @@ function buildTargetConfig(form) {
   config.win = {
     icon: form.winIcon || undefined,
     target: winTargets,
-    publisherName: form.publisherName || undefined,
+    signtoolOptions: form.publisherName
+      ? { publisherName: form.publisherName }
+      : undefined,
   };
 
   config.nsis = {
@@ -1843,6 +1970,7 @@ function buildTargetConfig(form) {
     icon: form.linuxIcon || undefined,
     target: parseCommaList(form.linuxTargets),
     category: form.linuxCategory || undefined,
+    maintainer: form.linuxMaintainer || undefined,
   };
 
   config.mac = {
@@ -1861,10 +1989,10 @@ function buildTargetConfig(form) {
     delete config.mac.target;
   }
 
-  if (!config.win.icon && !config.win.target && !config.win.publisherName) {
+  if (!config.win.icon && !config.win.target && !config.win.signtoolOptions) {
     delete config.win;
   }
-  if (!config.linux.icon && !config.linux.target && !config.linux.category) {
+  if (!config.linux.icon && !config.linux.target && !config.linux.category && !config.linux.maintainer) {
     delete config.linux;
   }
   if (!config.mac.icon && !config.mac.target && !config.mac.category) {
@@ -2341,7 +2469,8 @@ async function prepareWorkspaceForBuild(form, onLog, onStatus = noop) {
     name: fallbackName,
     version: form.version || "1.0.0",
     description: form.description || "Auto generated from html directory",
-    author: form.author || "",
+    author: toAuthorMetadata(form.author, form.authorEmail) || "",
+    homepage: form.homepage || undefined,
     main: "main.js",
     private: true,
     devDependencies: {
@@ -2424,6 +2553,10 @@ async function runBuild(form, onLog, onStatus = noop) {
     throw new Error("请先选择要打包的 Electron 项目目录。");
   }
 
+  // Windows 版 electron-builder 会直接调用系统 fpm。构建前检查可避免先生成
+  // Windows 产物、再在 Linux deb/rpm 等阶段以难以理解的 spawn ENOENT 失败。
+  assertFpmAvailableForBuild(form);
+
   updateOverall(onStatus, "running", "构建进行中");
   updateStep(onStatus, STEP_KEYS.PREPARE, "running", "准备构建参数");
 
@@ -2436,7 +2569,8 @@ async function runBuild(form, onLog, onStatus = noop) {
     throw new Error("目标项目缺少有效名称，无法打包。");
   }
 
-  const normalizedForm = normalizeBuildForm(prepared.normalizedForm, onLog);
+  let normalizedForm = normalizeBuildForm(prepared.normalizedForm, onLog);
+  normalizedForm = normalizeLinuxPackageMetadata(normalizedForm, pkg, onLog);
   if (!normalizedForm.electronVersion) {
     normalizedForm.electronVersion = resolveLocalElectronVersion();
   }

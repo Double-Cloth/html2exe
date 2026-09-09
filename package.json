@@ -1,6 +1,6 @@
 {
   "name": "html2exe",
-  "version": "2.0.0",
+  "version": "2.0.2",
   "description": "图形化 Electron 打包器",
   "main": "main.js",
   "scripts": {
@@ -16,7 +16,8 @@
   "type": "commonjs",
   "devDependencies": {
     "electron": "^41.2.1",
-    "electron-builder": "^26.8.1"
+    "electron-builder": "^26.8.1",
+    "rcedit": "4.0.1"
   },
   "build": {
     "asar": false,
