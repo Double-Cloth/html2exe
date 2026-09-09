@@ -10,6 +10,7 @@
 - 支持 Windows、Linux、macOS 目标配置。
 - 支持 Windows `nsis`、`portable`、`zip` 等常用输出。
 - 支持构建预设、架构、压缩、asar、资源规则等配置。
+- 支持保存、导入、导出和重置打包配置。
 - 支持实时日志、构建步骤状态、取消操作和缓存清理。
 - 内置并缓存 `electron-builder` 与 `npm`，降低目标机器环境依赖。
 

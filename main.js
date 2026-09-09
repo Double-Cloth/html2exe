@@ -21,6 +21,9 @@ const os = require("node:os");
 const { spawn, spawnSync } = require("node:child_process");
 
 const SETTINGS_FILE_NAME = "builder-settings.json";
+const SETTINGS_EXPORT_FORMAT = "html2exe.settings";
+const SETTINGS_EXPORT_VERSION = 1;
+const SETTINGS_IMPORT_MAX_BYTES = 1024 * 1024;
 const ELECTRON_BUILDER_VERSION = "26.8.1";
 const ELECTRON_BUILDER_BINARIES_MIRROR_DEFAULT = "https://npmmirror.com/mirrors/electron-builder-binaries/";
 const LOCAL_CACHE_ROOT = app.isPackaged
@@ -1054,6 +1057,60 @@ async function writeSettings(settings) {
   const settingsPath = getSettingsPath();
   await fs.mkdir(path.dirname(settingsPath), { recursive: true });
   await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
+}
+
+function normalizeSettingsRecord(settings) {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    throw new Error("配置内容必须是 JSON 对象。");
+  }
+
+  const normalized = {};
+  for (const [key, value] of Object.entries(settings)) {
+    const valueType = typeof value;
+    const isSupported =
+      value === null ||
+      valueType === "string" ||
+      valueType === "boolean" ||
+      (valueType === "number" && Number.isFinite(value));
+
+    if (!isSupported) {
+      throw new Error(`配置项“${key}”的值类型不受支持。`);
+    }
+    normalized[key] = value;
+  }
+
+  return normalized;
+}
+
+function createSettingsExport(settings) {
+  return {
+    format: SETTINGS_EXPORT_FORMAT,
+    version: SETTINGS_EXPORT_VERSION,
+    exportedAt: new Date().toISOString(),
+    settings: normalizeSettingsRecord(settings),
+  };
+}
+
+function parseSettingsExport(content) {
+  if (Buffer.byteLength(content, "utf-8") > SETTINGS_IMPORT_MAX_BYTES) {
+    throw new Error("配置文件过大，最大支持 1 MB。");
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    throw new Error("配置文件不是有效的 JSON。");
+  }
+
+  if (parsed && parsed.format === SETTINGS_EXPORT_FORMAT) {
+    if (parsed.version !== SETTINGS_EXPORT_VERSION) {
+      throw new Error(`不支持的配置文件版本：${parsed.version ?? "未知"}。`);
+    }
+    return normalizeSettingsRecord(parsed.settings);
+  }
+
+  return normalizeSettingsRecord(parsed);
 }
 
 function createWindow() {
@@ -2851,6 +2908,70 @@ ipcMain.handle("settings:save", async (_, settings) => {
     ...(settings || {}),
   });
   return { success: true };
+});
+
+ipcMain.handle("settings:export", async (_, settings) => {
+  try {
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: "导出 html2exe 配置",
+      defaultPath: "html2exe-config.json",
+      filters: [
+        { name: "JSON 配置文件", extensions: ["json"] },
+        { name: "所有文件", extensions: ["*"] },
+      ],
+    });
+
+    if (result.canceled || !result.filePath) {
+      return { success: false, canceled: true };
+    }
+
+    const filePath = path.extname(result.filePath) ? result.filePath : `${result.filePath}.json`;
+    const exported = createSettingsExport(settings || {});
+    await fs.writeFile(filePath, JSON.stringify(exported, null, 2), "utf-8");
+    return { success: true, filePath };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("settings:import", async () => {
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "导入 html2exe 配置",
+      properties: ["openFile"],
+      filters: [
+        { name: "JSON 配置文件", extensions: ["json"] },
+        { name: "所有文件", extensions: ["*"] },
+      ],
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false, canceled: true };
+    }
+
+    const filePath = result.filePaths[0];
+    const fileStat = await fs.stat(filePath);
+    if (fileStat.size > SETTINGS_IMPORT_MAX_BYTES) {
+      return { success: false, error: "配置文件过大，最大支持 1 MB。" };
+    }
+    const content = await fs.readFile(filePath, "utf-8");
+    return {
+      success: true,
+      filePath,
+      settings: parseSettingsExport(content),
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle("settings:reset", async () => {
+  try {
+    await fs.rm(getSettingsPath(), { force: true });
+    return { success: true, settings: getDefaultFormSettings() };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 });
 
 ipcMain.handle("project:inspect", async (_, projectDir) => {

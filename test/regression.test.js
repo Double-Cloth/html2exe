@@ -39,6 +39,8 @@ class FakeElement {
     this.type = "button";
     this.value = "";
     this.checked = false;
+    this.defaultValue = "";
+    this.defaultChecked = false;
     this.scrollTop = 0;
     this.scrollHeight = 0;
     this.listeners = new Map();
@@ -124,6 +126,7 @@ function loadRendererContext() {
 
 function loadMainContext() {
   const handlers = new Map();
+  const dialog = {};
   const context = {
     console,
     Buffer,
@@ -145,7 +148,7 @@ function loadMainContext() {
             quit: () => {},
           },
           BrowserWindow: function BrowserWindow() {},
-          dialog: {},
+          dialog,
           ipcMain: {
             handle: (name, handler) => handlers.set(name, handler),
           },
@@ -157,6 +160,7 @@ function loadMainContext() {
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(repoRoot, "main.js"), "utf-8"), context);
   context.__handlers = handlers;
+  context.__dialog = dialog;
   return context;
 }
 
@@ -231,6 +235,85 @@ test("默认 macOS 图标不会回退到 PNG 文件", () => {
   const defaults = context.getDefaultFormSettings();
 
   assert.ok(!defaults.macIcon || defaults.macIcon.toLowerCase().endsWith(".icns"));
+});
+
+test("配置导出格式可以完整解析并保留字段", () => {
+  const context = loadMainContext();
+  const exported = context.createSettingsExport({
+    productName: "示例应用",
+    asar: true,
+  });
+
+  const settings = context.parseSettingsExport(JSON.stringify(exported));
+
+  assert.deepEqual(JSON.parse(JSON.stringify(settings)), {
+    productName: "示例应用",
+    asar: true,
+  });
+});
+
+test("配置导入会拒绝不受支持的嵌套值", () => {
+  const context = loadMainContext();
+
+  assert.throws(
+    () => context.parseSettingsExport(JSON.stringify({ productName: { nested: true } })),
+    /值类型不受支持/
+  );
+});
+
+test("配置导入导出 IPC 可以完成 JSON 文件往返", async () => {
+  const context = loadMainContext();
+  const tempDir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "html2exe-config-test-"));
+  const configPath = path.join(tempDir, "shared-config.json");
+
+  try {
+    context.__dialog.showSaveDialog = async () => ({ canceled: false, filePath: configPath });
+    const exportResult = await context.__handlers.get("settings:export")(null, {
+      productName: "往返测试",
+      targetWindows: true,
+    });
+    assert.equal(exportResult.success, true);
+
+    context.__dialog.showOpenDialog = async () => ({
+      canceled: false,
+      filePaths: [configPath],
+    });
+    const importResult = await context.__handlers.get("settings:import")();
+
+    assert.equal(importResult.success, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(importResult.settings)), {
+      productName: "往返测试",
+      targetWindows: true,
+    });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("重置表单会恢复默认预设并应用主进程动态默认值", () => {
+  const context = loadRendererContext();
+  const productName = new FakeElement("productName");
+  productName.type = "text";
+  productName.defaultValue = "";
+  productName.value = "旧应用";
+  context.__elements.set("productName", productName);
+
+  const compression = new FakeElement("compression");
+  compression.type = "select-one";
+  compression.defaultValue = "normal";
+  compression.value = "maximum";
+  context.__elements.set("compression", compression);
+
+  const electronVersion = new FakeElement("electronVersion");
+  electronVersion.type = "text";
+  electronVersion.value = "旧版本";
+  context.__elements.set("electronVersion", electronVersion);
+
+  context.resetFormToDefaults({ electronVersion: "41.2.1" });
+
+  assert.equal(productName.value, "");
+  assert.equal(compression.value, "normal");
+  assert.equal(electronVersion.value, "41.2.1");
 });
 
 test("历史临时目录枚举失败时返回空清理结果", async () => {

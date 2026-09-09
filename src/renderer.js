@@ -77,6 +77,9 @@ const dom = {
   buildBtn: document.getElementById("buildBtn"),
   cancelBuildBtn: document.getElementById("cancelBuildBtn"),
   saveConfigBtn: document.getElementById("saveConfigBtn"),
+  importConfigBtn: document.getElementById("importConfigBtn"),
+  exportConfigBtn: document.getElementById("exportConfigBtn"),
+  resetConfigBtn: document.getElementById("resetConfigBtn"),
   clearCacheBtn: document.getElementById("clearCacheBtn"),
   loadProjectDefaultsBtn: document.getElementById("loadProjectDefaultsBtn"),
   appVersion: document.getElementById("appVersion"),
@@ -370,6 +373,24 @@ function applyStateToForm(state) {
   setPresetHint((state && state.buildPreset) || "release");
 }
 
+function resetFormToDefaults(overrides = {}) {
+  for (const id of getConfigFieldIds()) {
+    const el = document.getElementById(id);
+    if (!el) {
+      continue;
+    }
+
+    if (el.type === "checkbox") {
+      el.checked = Boolean(el.defaultChecked);
+    } else {
+      el.value = el.defaultValue ?? "";
+    }
+  }
+
+  applyBuildPreset("release", "initial");
+  applyStateToForm(overrides);
+}
+
 function applyDefaultsToForm(defaults) {
   if (!defaults || typeof defaults !== "object") {
     return;
@@ -606,6 +627,9 @@ function setFormBusy(busy) {
   setDisabled(dom.pickLinuxIconBtn, busy);
   setDisabled(dom.pickMacIconBtn, busy);
   setDisabled(dom.saveConfigBtn, busy);
+  setDisabled(dom.importConfigBtn, busy);
+  setDisabled(dom.exportConfigBtn, busy);
+  setDisabled(dom.resetConfigBtn, busy);
   setDisabled(dom.clearCacheBtn, busy);
   if (dom.goOutputPageBtn) {
     dom.goOutputPageBtn.disabled = busy;
@@ -678,6 +702,83 @@ async function saveConfig() {
     appendLog("配置已保存。", "ok");
   } finally {
     setButtonBusy(dom.saveConfigBtn, false);
+  }
+}
+
+async function exportConfig() {
+  setButtonBusy(dom.exportConfigBtn, true, "导出中...", "导出配置");
+  setActionFeedback("正在导出当前配置...", "pending");
+  try {
+    const result = await window.builderApi.exportSettings(gatherFormState());
+    if (result?.canceled) {
+      setActionFeedback("已取消导出。", "pending", 1500);
+      return;
+    }
+    if (!result?.success) {
+      const message = result?.error || "导出配置失败。";
+      setActionFeedback(message, "error", 2800);
+      appendLog(message, "error");
+      return;
+    }
+
+    setActionFeedback("配置已导出。", "success", 2000);
+    appendLog(`配置已导出到: ${result.filePath}`, "ok");
+  } finally {
+    setButtonBusy(dom.exportConfigBtn, false);
+  }
+}
+
+async function importConfig() {
+  setButtonBusy(dom.importConfigBtn, true, "导入中...", "导入配置");
+  setActionFeedback("正在选择并读取配置文件...", "pending");
+  try {
+    const result = await window.builderApi.importSettings();
+    if (result?.canceled) {
+      setActionFeedback("已取消导入。", "pending", 1500);
+      return;
+    }
+    if (!result?.success) {
+      const message = result?.error || "导入配置失败。";
+      setActionFeedback(message, "error", 3000);
+      appendLog(message, "error");
+      return;
+    }
+
+    resetFormToDefaults(result.settings);
+    const saveResult = await window.builderApi.saveSettings(gatherFormState());
+    if (!saveResult?.success) {
+      throw new Error("配置已读取，但保存到本地失败。");
+    }
+
+    setActionFeedback("配置已导入并应用。", "success", 2200);
+    appendLog(`配置已从文件导入: ${result.filePath}`, "ok");
+  } finally {
+    setButtonBusy(dom.importConfigBtn, false);
+  }
+}
+
+async function resetConfig() {
+  const confirmed = window.confirm("确定要重置全部配置吗？当前未导出的设置将无法恢复。");
+  if (!confirmed) {
+    return;
+  }
+
+  setButtonBusy(dom.resetConfigBtn, true, "重置中...", "重置配置");
+  setActionFeedback("正在重置配置...", "pending");
+  try {
+    const result = await window.builderApi.resetSettings();
+    if (!result?.success) {
+      const message = result?.error || "重置配置失败。";
+      setActionFeedback(message, "error", 2800);
+      appendLog(message, "error");
+      return;
+    }
+
+    resetFormToDefaults(result.settings);
+    setActionFeedback("配置已恢复为默认值。", "success", 2200);
+    appendLog("配置已重置为默认值。", "ok");
+  } finally {
+    setButtonBusy(dom.resetConfigBtn, false);
   }
 }
 
@@ -1027,6 +1128,33 @@ async function init() {
       } catch (error) {
         appendLog(`保存失败: ${error.message}`, "error");
       }
+    });
+  }
+
+  if (dom.importConfigBtn) {
+    dom.importConfigBtn.addEventListener("click", () => {
+      importConfig().catch((error) => {
+        setActionFeedback(`导入失败: ${error.message}`, "error", 3000);
+        appendLog(`导入失败: ${error.message}`, "error");
+      });
+    });
+  }
+
+  if (dom.exportConfigBtn) {
+    dom.exportConfigBtn.addEventListener("click", () => {
+      exportConfig().catch((error) => {
+        setActionFeedback(`导出失败: ${error.message}`, "error", 3000);
+        appendLog(`导出失败: ${error.message}`, "error");
+      });
+    });
+  }
+
+  if (dom.resetConfigBtn) {
+    dom.resetConfigBtn.addEventListener("click", () => {
+      resetConfig().catch((error) => {
+        setActionFeedback(`重置失败: ${error.message}`, "error", 3000);
+        appendLog(`重置失败: ${error.message}`, "error");
+      });
     });
   }
 
