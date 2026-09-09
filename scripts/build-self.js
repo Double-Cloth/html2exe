@@ -60,7 +60,7 @@ function createPersistentPortableNsiScript(script) {
 
   return withoutLaunch.replace(
     exitCleanupPattern,
-    "$1$2RMDir /r \"$$PLUGINSDIR\"\n$2MessageBox MB_OK \"Extraction complete.\"\n$2; persistent portable mode keeps unpacked files beside the executable."
+    "$1$2System::Call 'shell32.dll::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'\n$2RMDir /r \"$$PLUGINSDIR\"\n$2MessageBox MB_OK \"Extraction complete.\"\n$2; persistent portable mode keeps unpacked files beside the executable."
   );
 }
 

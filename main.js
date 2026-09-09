@@ -13,7 +13,7 @@ process.emitWarning = (warning, ...args) => {
   return originalEmitWarning(warning, ...args);
 };
 
-const { app, BrowserWindow, dialog, ipcMain } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, nativeImage } = require("electron");
 const fs = require("node:fs/promises");
 const fssync = require("node:fs");
 const path = require("node:path");
@@ -34,11 +34,16 @@ const DEFAULT_PROJECT_ICON_CANDIDATES = [
   path.join(__dirname, "src", "assets", "images", "icon.png"),
   path.join(__dirname, "assets", "images", "icon.png"),
 ];
+const DEFAULT_WINDOWS_ICON_CANDIDATES = [
+  path.join(__dirname, "src", "assets", "images", "icon.ico"),
+  path.join(__dirname, "assets", "images", "icon.ico"),
+];
 const DEFAULT_MAC_ICON_CANDIDATES = [
   path.join(__dirname, "src", "assets", "images", "icon.icns"),
   path.join(__dirname, "assets", "images", "icon.icns"),
 ];
 let cachedDefaultProjectIconPath = null;
+let cachedDefaultWindowsIconPath = null;
 let cachedDefaultMacIconPath = null;
 const CACHE_PATHS = {
   appUserData: path.join(LOCAL_CACHE_ROOT, "electron", "user-data"),
@@ -990,7 +995,7 @@ function createPersistentPortableNsiScript(script) {
 
   return withoutLaunch.replace(
     exitCleanupPattern,
-    "$1$2RMDir /r \"$$PLUGINSDIR\"\n$2MessageBox MB_OK \"Extraction complete.\"\n$2; persistent portable mode keeps unpacked files beside the executable."
+    "$1$2System::Call 'shell32.dll::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'\n$2RMDir /r \"$$PLUGINSDIR\"\n$2MessageBox MB_OK \"Extraction complete.\"\n$2; persistent portable mode keeps unpacked files beside the executable."
   );
 }
 
@@ -1035,7 +1040,7 @@ function getSettingsPath() {
 function getDefaultFormSettings() {
   const localElectronVersion = resolveLocalElectronVersion();
   return {
-    winIcon: resolveDefaultProjectIconPath(),
+    winIcon: resolveDefaultWindowsIconPath(),
     linuxIcon: resolveDefaultProjectIconPath(),
     macIcon: resolveDefaultMacIconPath(),
     electronVersion: localElectronVersion,
@@ -1058,6 +1063,34 @@ async function writeSettings(settings) {
   const settingsPath = getSettingsPath();
   await fs.mkdir(path.dirname(settingsPath), { recursive: true });
   await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
+}
+
+function resolveDefaultWindowsIconPath() {
+  if (cachedDefaultWindowsIconPath !== null) {
+    return cachedDefaultWindowsIconPath;
+  }
+
+  const candidates = [...DEFAULT_WINDOWS_ICON_CANDIDATES];
+
+  try {
+    const appPath = app.getAppPath();
+    if (appPath) {
+      candidates.push(path.join(appPath, "src", "assets", "images", "icon.ico"));
+      candidates.push(path.join(appPath, "assets", "images", "icon.ico"));
+    }
+  } catch (error) {}
+
+  try {
+    const resourcesPath = process.resourcesPath || "";
+    if (resourcesPath) {
+      candidates.push(path.join(resourcesPath, "app.asar.unpacked", "src", "assets", "images", "icon.ico"));
+      candidates.push(path.join(resourcesPath, "app", "src", "assets", "images", "icon.ico"));
+      candidates.push(path.join(resourcesPath, "src", "assets", "images", "icon.ico"));
+    }
+  } catch (error) {}
+
+  cachedDefaultWindowsIconPath = candidates.find((candidate) => fssync.existsSync(candidate)) || "";
+  return cachedDefaultWindowsIconPath;
 }
 
 function normalizeSettingsRecord(settings) {
@@ -1814,7 +1847,7 @@ async function inspectProjectDefaults(projectDirInput) {
         windowResizable: true,
         windowFullscreenable: true,
         windowAlwaysOnTop: false,
-        winIcon: resolveDefaultProjectIconPath(),
+        winIcon: resolveDefaultWindowsIconPath(),
         linuxIcon: resolveDefaultProjectIconPath(),
         macIcon: resolveDefaultMacIconPath(),
       },
@@ -1883,7 +1916,7 @@ async function inspectProjectDefaults(projectDirInput) {
       windowResizable: true,
       windowFullscreenable: true,
       windowAlwaysOnTop: false,
-      winIcon: resolveDefaultProjectIconPath(),
+      winIcon: resolveDefaultWindowsIconPath(),
       linuxIcon: resolveDefaultProjectIconPath(),
       macIcon: resolveDefaultMacIconPath(),
     },
@@ -2098,6 +2131,118 @@ function resolveIconPathAgainstProject(iconPath, projectDir) {
   return path.resolve(cleaned);
 }
 
+function isPngBuffer(buffer) {
+  return (
+    Buffer.isBuffer(buffer) &&
+    buffer.length >= 24 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  );
+}
+
+function validateWindowsIcoBuffer(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 22) {
+    throw new Error("ICO 文件过小或内容不完整。");
+  }
+
+  const reserved = buffer.readUInt16LE(0);
+  const type = buffer.readUInt16LE(2);
+  const count = buffer.readUInt16LE(4);
+  if (reserved !== 0 || type !== 1 || count < 1) {
+    throw new Error("ICO 文件头无效。");
+  }
+
+  const directoryEnd = 6 + count * 16;
+  if (directoryEnd > buffer.length) {
+    throw new Error("ICO 图像目录不完整。");
+  }
+
+  for (let index = 0; index < count; index += 1) {
+    const entryOffset = 6 + index * 16;
+    const imageSize = buffer.readUInt32LE(entryOffset + 8);
+    const imageOffset = buffer.readUInt32LE(entryOffset + 12);
+    if (imageSize < 1 || imageOffset < directoryEnd || imageOffset + imageSize > buffer.length) {
+      throw new Error(`ICO 第 ${index + 1} 个图像条目无效。`);
+    }
+  }
+
+  return count;
+}
+
+function createWindowsIcoBuffer(frames) {
+  if (!Array.isArray(frames) || frames.length === 0) {
+    throw new Error("没有可写入 ICO 的 PNG 图像帧。");
+  }
+
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(0, 0);
+  header.writeUInt16LE(1, 2);
+  header.writeUInt16LE(frames.length, 4);
+
+  const entries = [];
+  const images = [];
+  let imageOffset = 6 + frames.length * 16;
+
+  frames.forEach((frame, index) => {
+    const size = Number(frame && frame.size);
+    const png = frame && frame.png;
+    if (!Number.isInteger(size) || size < 1 || size > 256 || !isPngBuffer(png)) {
+      throw new Error(`第 ${index + 1} 个 ICO 图像帧无效。`);
+    }
+
+    const pngWidth = png.readUInt32BE(16);
+    const pngHeight = png.readUInt32BE(20);
+    if (pngWidth !== size || pngHeight !== size) {
+      throw new Error(`第 ${index + 1} 个 ICO 图像帧尺寸应为 ${size}x${size}，实际为 ${pngWidth}x${pngHeight}。`);
+    }
+
+    const entry = Buffer.alloc(16);
+    entry.writeUInt8(size === 256 ? 0 : size, 0);
+    entry.writeUInt8(size === 256 ? 0 : size, 1);
+    entry.writeUInt8(0, 2);
+    entry.writeUInt8(0, 3);
+    entry.writeUInt16LE(1, 4);
+    entry.writeUInt16LE(32, 6);
+    entry.writeUInt32LE(png.length, 8);
+    entry.writeUInt32LE(imageOffset, 12);
+    entries.push(entry);
+    images.push(png);
+    imageOffset += png.length;
+  });
+
+  const icoBuffer = Buffer.concat([header, ...entries, ...images]);
+  validateWindowsIcoBuffer(icoBuffer);
+  return icoBuffer;
+}
+
+function convertPngBufferToWindowsIco(buffer) {
+  if (!isPngBuffer(buffer)) {
+    throw new Error("文件内容不是有效的 PNG 图像。");
+  }
+  if (!nativeImage || typeof nativeImage.createFromBuffer !== "function") {
+    throw new Error("当前 Electron 运行时不支持 PNG 图标转换，请改用有效的 .ico 文件。");
+  }
+
+  const sourceImage = nativeImage.createFromBuffer(buffer);
+  if (!sourceImage || typeof sourceImage.isEmpty !== "function" || sourceImage.isEmpty()) {
+    throw new Error("Electron 无法读取该 PNG 图像。");
+  }
+
+  const iconSizes = [16, 24, 32, 48, 64, 128, 256];
+  const frames = iconSizes.map((size) => {
+    const resized = sourceImage.resize({ width: size, height: size, quality: "best" });
+    const png = resized.toPNG();
+    return { size, png };
+  });
+  return createWindowsIcoBuffer(frames);
+}
+
 async function materializeIconPathForBuilder(iconPath, platformKey, projectDir = "", onLog = noop) {
   const raw = sanitizeIconInput(iconPath);
   if (!raw) {
@@ -2107,6 +2252,10 @@ async function materializeIconPathForBuilder(iconPath, platformKey, projectDir =
   const resolvedRaw = resolveIconPathAgainstProject(raw, projectDir);
 
   if (!(await pathExists(resolvedRaw))) {
+    if (platformKey === "win") {
+      throw new Error(`Windows 图标路径不存在，已停止构建以避免主程序回退为默认图标: ${resolvedRaw}`);
+    }
+
     const defaultIcon = resolveDefaultProjectIconPath();
     if (defaultIcon) {
       onLog(
@@ -2141,56 +2290,29 @@ async function materializeIconPathForBuilder(iconPath, platformKey, projectDir =
 
   if (platformKey === "win") {
     const ext = path.extname(materializedPath).toLowerCase();
-    if (ext !== ".ico") {
+    const buffer = await fs.readFile(materializedPath);
+
+    if (ext === ".ico") {
       try {
-        const buffer = await fs.readFile(materializedPath);
-        const pngSignature =
-          buffer.length >= 8 &&
-          buffer[0] === 0x89 &&
-          buffer[1] === 0x50 &&
-          buffer[2] === 0x4e &&
-          buffer[3] === 0x47 &&
-          buffer[4] === 0x0d &&
-          buffer[5] === 0x0a &&
-          buffer[6] === 0x1a &&
-          buffer[7] === 0x0a;
-
-        if (pngSignature) {
-          const iconCacheDir = path.join(CACHE_PATHS.builderTemp, "runtime-assets");
-          await fs.mkdir(iconCacheDir, { recursive: true });
-
-          const pngWidth = buffer.length >= 24 ? buffer.readUInt32BE(16) : 0;
-          const pngHeight = buffer.length >= 24 ? buffer.readUInt32BE(20) : 0;
-          const icoWidth = pngWidth >= 256 ? 0 : Math.max(1, Math.min(255, pngWidth || 256));
-          const icoHeight = pngHeight >= 256 ? 0 : Math.max(1, Math.min(255, pngHeight || 256));
-
-          const header = Buffer.alloc(6);
-          header.writeUInt16LE(0, 0);
-          header.writeUInt16LE(1, 2);
-          header.writeUInt16LE(1, 4);
-
-          const directoryEntry = Buffer.alloc(16);
-          directoryEntry.writeUInt8(icoWidth, 0);
-          directoryEntry.writeUInt8(icoHeight, 1);
-          directoryEntry.writeUInt8(0, 2);
-          directoryEntry.writeUInt8(0, 3);
-          directoryEntry.writeUInt16LE(1, 4);
-          directoryEntry.writeUInt16LE(32, 6);
-          directoryEntry.writeUInt32LE(buffer.length, 8);
-          directoryEntry.writeUInt32LE(22, 12);
-
-          const icoBuffer = Buffer.concat([header, directoryEntry, buffer]);
-          const icoPath = path.join(iconCacheDir, `icon-win-${Date.now()}.ico`);
-          await fs.writeFile(icoPath, icoBuffer);
-          onLog(`Windows 图标已自动从 ${ext || "原格式"} 转换为 ICO: ${icoPath}\n`);
-          return icoPath;
-        }
-
-        onLog(`警告: Windows 图标不是 ICO 或 PNG 格式，可能导致可执行文件图标回退默认: ${materializedPath}\n`);
+        const frameCount = validateWindowsIcoBuffer(buffer);
+        onLog(`Windows ICO 校验通过（${frameCount} 个图像帧）: ${materializedPath}\n`);
       } catch (error) {
-        const detail = error && error.message ? error.message : String(error || "未知错误");
-        onLog(`警告: 处理 Windows 图标失败，继续使用原文件: ${detail}\n`);
+        throw new Error(`Windows 图标文件无效 (${materializedPath}): ${error.message}`);
       }
+    } else if (isPngBuffer(buffer)) {
+      try {
+        const icoBuffer = convertPngBufferToWindowsIco(buffer);
+        const iconCacheDir = path.join(CACHE_PATHS.builderTemp, "runtime-assets");
+        await fs.mkdir(iconCacheDir, { recursive: true });
+        const icoPath = path.join(iconCacheDir, `icon-win-${Date.now()}.ico`);
+        await fs.writeFile(icoPath, icoBuffer);
+        onLog(`Windows 图标已转换为包含多尺寸帧的 ICO: ${icoPath}\n`);
+        return icoPath;
+      } catch (error) {
+        throw new Error(`Windows PNG 图标转换失败 (${materializedPath}): ${error.message}`);
+      }
+    } else {
+      throw new Error(`Windows 图标仅支持有效的 ICO 或 PNG 文件: ${materializedPath}`);
     }
   }
 
@@ -2599,25 +2721,23 @@ async function runBuild(form, onLog, onStatus = noop) {
       "  const path = require(\"node:path\");",
       "  const { spawnSync } = require(\"node:child_process\");",
       "",
-      "  const rceditPath = String(process.env.HTML2EXE_RCEDIT_PATH || \"\").trim();",
-      "  if (!rceditPath || !fs.existsSync(rceditPath)) {",
-      "    console.log(\"[afterPack] 未检测到 rcedit，已跳过 Windows 可执行文件图标写入。\");",
+      "  const iconPath = String(process.env.HTML2EXE_WIN_ICON_PATH || \"\").trim();",
+      "  if (!iconPath) {",
       "    return;",
       "  }",
       "",
-      "  const winConfig = context.packager && context.packager.config && context.packager.config.win",
-      "    ? context.packager.config.win",
-      "    : {};",
-      "  const iconPath = typeof winConfig.icon === \"string\" ? winConfig.icon : \"\";",
-      "  if (!iconPath || !fs.existsSync(iconPath) || path.extname(iconPath).toLowerCase() !== \".ico\") {",
-      "    console.log(\"[afterPack] Windows 图标不可用（需要存在的 .ico 文件），已跳过 exe 图标写入。\");",
-      "    return;",
+      "  if (!fs.existsSync(iconPath) || path.extname(iconPath).toLowerCase() !== \".ico\") {",
+      "    throw new Error(`[afterPack] Windows 图标不可用（需要存在的 .ico 文件）: ${iconPath}`);",
+      "  }",
+      "",
+      "  const rceditPath = String(process.env.HTML2EXE_RCEDIT_PATH || \"\").trim();",
+      "  if (!rceditPath || !fs.existsSync(rceditPath)) {",
+      "    throw new Error(`[afterPack] 未检测到可用的 rcedit: ${rceditPath || \"(空)\"}`);",
       "  }",
       "",
       "  const appOutDir = context.appOutDir || \"\";",
       "  if (!appOutDir || !fs.existsSync(appOutDir)) {",
-      "    console.log(\"[afterPack] appOutDir 不存在，已跳过 exe 图标写入。\");",
-      "    return;",
+      "    throw new Error(`[afterPack] appOutDir 不存在: ${appOutDir || \"(空)\"}`);",
       "  }",
       "",
       "  const appInfo = context.packager && context.packager.appInfo ? context.packager.appInfo : null;",
@@ -2659,8 +2779,7 @@ async function runBuild(form, onLog, onStatus = noop) {
       "  }",
       "",
       "  if (!exePath) {",
-      "    console.log(\"[afterPack] 未找到主程序 exe，已跳过图标写入。\");",
-      "    return;",
+      "    throw new Error(`[afterPack] 未在输出目录中找到主程序 exe: ${appOutDir}`);",
       "  }",
       "",
       "  const result = spawnSync(rceditPath, [exePath, \"--set-icon\", iconPath], { stdio: \"pipe\" });",
@@ -2820,12 +2939,17 @@ async function runBuild(form, onLog, onStatus = noop) {
 
   if (prepared.htmlOnly) {
     childEnv.CSC_IDENTITY_AUTO_DISCOVERY = "false";
-    const bundledRceditPath = resolveBundledRceditBinaryPath();
-    if (bundledRceditPath) {
-      childEnv.HTML2EXE_RCEDIT_PATH = bundledRceditPath;
-      onLog(`已检测到 rcedit: ${bundledRceditPath}\n`);
-    } else {
-      onLog("警告: 未检测到 rcedit，afterPack 将无法写入 Windows 可执行文件图标。\n");
+    const finalWindowsIconPath = config.win && typeof config.win.icon === "string" ? config.win.icon : "";
+    if (finalWindowsIconPath) {
+      const bundledRceditPath = resolveBundledRceditBinaryPath();
+      childEnv.HTML2EXE_WIN_ICON_PATH = finalWindowsIconPath;
+      onLog(`已配置主程序图标强制写入: ${finalWindowsIconPath}\n`);
+      if (bundledRceditPath) {
+        childEnv.HTML2EXE_RCEDIT_PATH = bundledRceditPath;
+        onLog(`已检测到 rcedit: ${bundledRceditPath}\n`);
+      } else {
+        onLog("错误: 已配置 Windows 图标，但未检测到内置 rcedit；构建将在 afterPack 阶段中止。\n");
+      }
     }
   }
 

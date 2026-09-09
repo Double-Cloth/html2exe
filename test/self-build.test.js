@@ -56,6 +56,7 @@ test("self build wrapper patches portable template for Windows builds", () => {
   assert.doesNotMatch(patched, /ExecWait "\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}/);
   assert.doesNotMatch(patched, /SetErrorLevel \$0/);
   assert.match(patched, /RMDir \/r "\$PLUGINSDIR"/);
+  assert.match(patched, /SHChangeNotify\(i 0x08000000/);
   assert.match(patched, /MessageBox MB_OK "Extraction complete\."/);
   assert.doesNotMatch(patched, /[\u4e00-\u9fff]/);
   assert.doesNotMatch(patched.slice(patched.indexOf(" SetOutPath $EXEDIR")), /[ \t]+RMDir \/r \$INSTDIR/);

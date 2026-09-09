@@ -237,6 +237,47 @@ test("默认 macOS 图标不会回退到 PNG 文件", () => {
   assert.ok(!defaults.macIcon || defaults.macIcon.toLowerCase().endsWith(".icns"));
 });
 
+test("默认 Windows 图标直接使用有效 ICO 文件", () => {
+  const context = loadMainContext();
+  const defaults = context.getDefaultFormSettings();
+
+  assert.ok(defaults.winIcon.toLowerCase().endsWith(".ico"));
+  assert.doesNotThrow(() => context.validateWindowsIcoBuffer(fs.readFileSync(defaults.winIcon)));
+});
+
+test("PNG 转换后的 Windows ICO 包含完整的多尺寸目录", () => {
+  const context = loadMainContext();
+  const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const sizes = [16, 24, 32, 48, 64, 128, 256];
+  const frames = sizes.map((size) => {
+    const png = Buffer.alloc(24);
+    pngSignature.copy(png, 0);
+    png.writeUInt32BE(size, 16);
+    png.writeUInt32BE(size, 20);
+    return { size, png };
+  });
+
+  const ico = context.createWindowsIcoBuffer(frames);
+
+  assert.equal(context.validateWindowsIcoBuffer(ico), sizes.length);
+  assert.equal(ico.readUInt16LE(4), sizes.length);
+  sizes.forEach((size, index) => {
+    const entryOffset = 6 + index * 16;
+    assert.equal(ico[entryOffset], size === 256 ? 0 : size);
+    assert.equal(ico[entryOffset + 1], size === 256 ? 0 : size);
+  });
+});
+
+test("Windows 图标路径失效时停止构建而不是静默使用默认图标", async () => {
+  const context = loadMainContext();
+  const missingIcon = path.join(repoRoot, ".test-cache", "missing-icon.ico");
+
+  await assert.rejects(
+    context.materializeIconPathForBuilder(missingIcon, "win", repoRoot),
+    /Windows 图标路径不存在.*停止构建/
+  );
+});
+
 test("开发环境可以定位随项目安装的 rcedit", () => {
   const context = loadMainContext();
   const rceditPath = context.resolveBundledRceditBinaryPath();
@@ -618,6 +659,7 @@ test("persistent portable NSIS script extracts beside exe and keeps files after 
   assert.doesNotMatch(patched, /ExecWait "\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}/);
   assert.doesNotMatch(patched, /SetErrorLevel \$0/);
   assert.match(patched, /RMDir \/r "\$PLUGINSDIR"/);
+  assert.match(patched, /SHChangeNotify\(i 0x08000000/);
   assert.match(patched, /MessageBox MB_OK "Extraction complete\."/);
   assert.doesNotMatch(patched, /[\u4e00-\u9fff]/);
   assert.match(patched, /persistent portable mode keeps unpacked files/);
