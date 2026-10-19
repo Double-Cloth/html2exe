@@ -140,6 +140,67 @@ function loadRendererContext() {
   return context;
 }
 
+test("错误反馈不会被自动清除，后续成功操作可以替换错误", () => {
+  const context = loadRendererContext();
+  let scheduled = 0;
+  context.setTimeout = () => { scheduled += 1; return scheduled; };
+  vm.runInContext('setActionFeedback("请选择项目目录", "error", 2200)', context);
+  const feedback = context.__elements.get("actionFeedback");
+  assert.equal(feedback.textContent, "请选择项目目录");
+  assert.equal(scheduled, 0);
+  vm.runInContext('setActionFeedback("配置已保存", "success", 1800)', context);
+  assert.equal(feedback.textContent, "配置已保存");
+  assert.equal(feedback.classList.values.has("error"), false);
+  assert.equal(scheduled, 1);
+});
+
+test("配置导航支持键盘切换并同步可访问状态，保留未保存字段", () => {
+  const context = loadRendererContext();
+  const elements = context.__elements;
+  let focused = null;
+  const makeElement = (id) => {
+    const element = new FakeElement(id);
+    element.attributes = {};
+    element.setAttribute = (name, value) => { element.attributes[name] = value; };
+    element.focus = () => { focused = element; };
+    elements.set(id, element);
+    return element;
+  };
+  const tabs = ["basic", "build", "resources"].map((key) => {
+    const button = makeElement(`nav-${key}`);
+    button.dataset.tab = key;
+    button.textContent = { basic: "基础配置", build: "构建策略", resources: "文件与资源" }[key];
+    makeElement(`tab-${key}`);
+    return button;
+  });
+  makeElement("pageTitle");
+  makeElement("pageDescription");
+  makeElement("workspaceScroll");
+  const productName = makeElement("productName");
+  productName.value = "尚未保存的应用名称";
+  context.document.querySelectorAll = (selector) => selector === ".nav-item[data-tab]" ? tabs : [];
+  vm.runInContext("initTabs()", context);
+  const press = (button, key) => {
+    let prevented = false;
+    button.listeners.get("keydown")({ key, preventDefault: () => { prevented = true; } });
+    assert.equal(prevented, true);
+  };
+  press(tabs[0], "ArrowDown");
+  assert.equal(focused, tabs[1]);
+  assert.equal(tabs[1].attributes["aria-selected"], "true");
+  assert.equal(tabs[0].tabIndex, -1);
+  assert.equal(elements.get("tab-basic").hidden, true);
+  assert.equal(elements.get("tab-build").hidden, false);
+  assert.equal(elements.get("pageTitle").textContent, "构建策略");
+  press(tabs[1], "End");
+  assert.equal(focused, tabs[2]);
+  press(tabs[2], "Home");
+  assert.equal(focused, tabs[0]);
+  press(tabs[0], "ArrowUp");
+  assert.equal(focused, tabs[2]);
+  assert.equal(productName.value, "尚未保存的应用名称");
+});
+
 function loadMainContext() {
   const handlers = new Map();
   const webContents = { mainFrame: { url: require("node:url").pathToFileURL(path.join(repoRoot, "src", "index.html")).href } };

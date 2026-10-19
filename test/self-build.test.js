@@ -9,11 +9,13 @@ test("npm build defaults to persistent Windows portable output", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf-8"));
   const lock = JSON.parse(fs.readFileSync(path.join(repoRoot, "package-lock.json"), "utf-8"));
   const indexHtml = fs.readFileSync(path.join(repoRoot, "src", "index.html"), "utf-8");
+  const outputHtml = fs.readFileSync(path.join(repoRoot, "src", "output.html"), "utf-8");
 
-  assert.equal(pkg.version, "2.0.5");
+  assert.equal(pkg.version, "3.0.0");
   assert.equal(lock.version, pkg.version);
   assert.equal(lock.packages[""].version, pkg.version);
   assert.match(indexHtml, new RegExp(`>v${pkg.version.replaceAll(".", "\\.")}<`));
+  assert.match(outputHtml, new RegExp(`>v${pkg.version.replaceAll(".", "\\.")}<`));
   assert.equal(pkg.scripts.prebuild, "node scripts/pack-toolchain.js");
   assert.equal(pkg.scripts.build, "node scripts/build-self.js");
   assert.equal(pkg.build.afterPack, "./scripts/afterPack.js");

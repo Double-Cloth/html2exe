@@ -267,10 +267,13 @@ function setActionFeedback(text, level = "pending", autoClearMs = 0) {
   }
   dom.actionFeedback.textContent = text;
 
-  if (autoClearMs > 0) {
+  // 错误信息保留到下一次操作，避免用户尚未看清就被自动清除。
+  if (autoClearMs > 0 && level !== "error") {
     actionFeedbackTimer = setTimeout(() => {
       dom.actionFeedback.classList.remove("pending", "success", "error");
-      dom.actionFeedback.textContent = "等待操作...";
+      dom.actionFeedback.textContent = dom.logOutput
+        ? "可开始打包，并在此查看构建结果。"
+        : "配置完成后，前往输出页面开始打包。";
       actionFeedbackTimer = null;
     }, autoClearMs);
   }
@@ -1221,26 +1224,62 @@ init().catch((error) => {
 });
 
 
-// Tab switching logic
+// 分区切换仅更新界面，保留各配置字段的当前值。
 function initTabs() {
-  const navItems = document.querySelectorAll('.nav-item');
-  const tabContents = document.querySelectorAll('.tab-content');
+  const navItems = Array.from(document.querySelectorAll(".nav-item[data-tab]"));
+  const pageTitle = document.getElementById("pageTitle");
+  const pageDescription = document.getElementById("pageDescription");
+  const workspaceScroll = document.getElementById("workspaceScroll");
+  const descriptions = {
+    basic: "选择项目目录，填写应用信息。",
+    build: "选择构建预设，配置运行时与目标平台。",
+    platform: "分别设置 Windows、Linux 与 macOS 的构建产物。",
+    installer: "调整 Windows NSIS 安装向导与快捷方式。",
+    window: "配置应用窗口的初始状态与各平台图标。",
+    resources: "指定打包文件、附加资源与不归档的文件。",
+  };
 
-  navItems.forEach(btn => {
-    btn.addEventListener('click', () => {
-      // Remove active from all
-      navItems.forEach(b => b.classList.remove('active'));
-      tabContents.forEach(t => t.classList.remove('active'));
-
-      // Add active to clicked
-      btn.classList.add('active');
-      const tabId = 'tab-' + btn.dataset.tab;
-      const tabEl = document.getElementById(tabId);
-      if (tabEl) {
-        tabEl.classList.add('active');
+  function activateTab(button) {
+    navItems.forEach((item) => {
+      const active = item === button;
+      const panel = document.getElementById(`tab-${item.dataset.tab}`);
+      item.classList.toggle("active", active);
+      item.setAttribute("aria-selected", String(active));
+      item.tabIndex = active ? 0 : -1;
+      if (panel) {
+        panel.classList.toggle("active", active);
+        panel.hidden = !active;
       }
     });
+    if (pageTitle) pageTitle.textContent = button.textContent.trim();
+    if (pageDescription) pageDescription.textContent = descriptions[button.dataset.tab] || "";
+    if (workspaceScroll) workspaceScroll.scrollTop = 0;
+  }
+
+  navItems.forEach((button, index) => {
+    const panel = document.getElementById(`tab-${button.dataset.tab}`);
+    button.id = `nav-${button.dataset.tab}`;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-controls", `tab-${button.dataset.tab}`);
+    if (panel) {
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", button.id);
+      panel.tabIndex = 0;
+    }
+    button.addEventListener("click", () => activateTab(button));
+    button.addEventListener("keydown", (event) => {
+      let nextIndex;
+      if (event.key === "ArrowDown" || event.key === "ArrowRight") nextIndex = (index + 1) % navItems.length;
+      if (event.key === "ArrowUp" || event.key === "ArrowLeft") nextIndex = (index - 1 + navItems.length) % navItems.length;
+      if (event.key === "Home") nextIndex = 0;
+      if (event.key === "End") nextIndex = navItems.length - 1;
+      if (nextIndex === undefined) return;
+      event.preventDefault();
+      activateTab(navItems[nextIndex]);
+      navItems[nextIndex].focus();
+    });
   });
+  if (navItems.length > 0) activateTab(navItems[0]);
 }
 
 document.addEventListener('DOMContentLoaded', () => {

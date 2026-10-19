@@ -7,55 +7,55 @@
     <title>Electron 图形化打包器</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
-  <body>
-    <div class="background-glow"></div>
+  <body class="config-page">
     <main class="layout">
-      <aside class="sidebar panel">
-        <div class="brand">
-          <h1>html2exe</h1>
-          <p>Electron 打包器</p>
-          <div id="appVersion" class="brand-version" aria-label="应用版本号">v2.0.5</div>
-        </div>
-        <nav class="nav-menu">
-          <button class="nav-item active" data-tab="basic"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg> 基础配置</button>
-          <button class="nav-item" data-tab="build"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="m7.5 4.27 9 5.15"></path><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path><path d="m3.3 7 8.7 5 8.7-5"></path><path d="M12 22V12"></path></svg> 构建策略</button>
-          <button class="nav-item" data-tab="platform"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><rect width="20" height="14" x="2" y="3" rx="2"></rect><line x1="8" x2="16" y1="21" y2="21"></line><line x1="12" x2="12" y1="17" y2="21"></line></svg> 平台参数</button>
-          <button class="nav-item" data-tab="installer"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"></path><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"></path><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"></path><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"></path></svg> 安装包设置</button>
-          <button class="nav-item" data-tab="window"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"></rect><line x1="3" x2="21" y1="9" y2="9"></line><line x1="9" x2="9" y1="21" y2="9"></line></svg> 窗口与图标</button>
-          <button class="nav-item" data-tab="resources"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg> 文件与资源</button>
+      <aside class="sidebar" aria-label="配置导航">
+        <div class="brand"><div class="brand-top"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="brand-mark" aria-hidden="true" focusable="false"><path d="m12 3 9 5v8l-9 5-9-5V8z"/><path d="m3 8 9 5 9-5M12 13v8M7.5 5.5l9 5"/></svg><h1>html2exe</h1></div><p>Electron 打包器</p><span id="appVersion" class="brand-version" aria-label="应用版本号">v3.0.0</span></div>
+        <nav class="nav-menu" role="tablist" aria-label="打包配置" aria-orientation="vertical">
+          <button type="button" class="nav-item active" data-tab="basic"><svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg> 基础配置</button>
+          <button type="button" class="nav-item" data-tab="build"><svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="m7.5 4.27 9 5.15"></path><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path><path d="m3.3 7 8.7 5 8.7-5"></path><path d="M12 22V12"></path></svg> 构建策略</button>
+          <button type="button" class="nav-item" data-tab="platform"><svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><rect width="20" height="14" x="2" y="3" rx="2"></rect><line x1="8" x2="16" y1="21" y2="21"></line><line x1="12" x2="12" y1="17" y2="21"></line></svg> 平台参数</button>
+          <button type="button" class="nav-item" data-tab="installer"><svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"></path><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"></path><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"></path><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"></path></svg> 安装包设置</button>
+          <button type="button" class="nav-item" data-tab="window"><svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"></rect><line x1="3" x2="21" y1="9" y2="9"></line><line x1="9" x2="9" y1="21" y2="9"></line></svg> 窗口与图标</button>
+          <button type="button" class="nav-item" data-tab="resources"><svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg> 文件与资源</button>
         </nav>
-        <div class="sidebar-actions">
-          <button id="goOutputPageBtn" type="button" class="primary"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M4 12h16"></path><path d="m14 6 6 6-6 6"></path></svg> 前往输出页面</button>
-          <button id="loadProjectDefaultsBtn" type="button" class="secondary"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg> 读取项目信息</button>
-          <div class="config-actions-grid" aria-label="配置管理">
-            <button id="saveConfigBtn" type="button" class="secondary"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"></path><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"></path><path d="M7 3v4a1 1 0 0 0 1 1h7"></path></svg> 保存配置</button>
-            <button id="importConfigBtn" type="button" class="secondary"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path></svg> 导入配置</button>
-            <button id="exportConfigBtn" type="button" class="secondary"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M12 21V9"></path><path d="m17 14-5-5-5 5"></path><path d="M5 3h14"></path></svg> 导出配置</button>
-            <button id="resetConfigBtn" type="button" class="danger"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"></path><path d="M3 3v5h5"></path></svg> 重置配置</button>
-          </div>
-          <button id="clearCacheBtn" type="button" class="warning"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg> 清理构建缓存</button>
+        <div class="sidebar-actions" aria-label="配置管理">
+          <button id="importConfigBtn" type="button" class="secondary"><svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path></svg> 导入配置</button>
+          <button id="exportConfigBtn" type="button" class="secondary"><svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M12 21V9"></path><path d="m17 14-5-5-5 5"></path><path d="M5 3h14"></path></svg> 导出配置</button>
+          <button id="resetConfigBtn" type="button" class="danger"><svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"></path><path d="M3 3v5h5"></path></svg> 重置配置</button>
+          <button id="clearCacheBtn" type="button" class="warning"><svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg> 清理构建缓存</button>
+          <p class="sidebar-note">配置项目，构建桌面应用。</p>
         </div>
       </aside>
-
-      <div class="content-area single-panel">
-        <section class="panel form-panel">
+      <div class="content-area">
+        <header class="workspace-toolbar"><span class="toolbar-title">项目配置</span><button id="saveConfigBtn" type="button" class="secondary"><svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"></path><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"></path><path d="M7 3v4a1 1 0 0 0 1 1h7"></path></svg> 保存配置</button></header>
+        <div class="workspace-scroll" id="workspaceScroll">
+          <div class="workspace-inner">
+            <header class="page-heading">
+              <div><h2 id="pageTitle">基础配置</h2><p id="pageDescription" class="page-description">选择项目目录，填写应用信息。</p></div>
+              <p class="context-note">支持 Electron 项目与纯 HTML 目录。</p>
+            </header>
+            <section class="form-panel" aria-labelledby="pageTitle">
           <div id="tab-basic" class="tab-content active">
-            <div class="section-title">基础路径</div>
-            <div class="field-row">
+            <h3 class="section-title">基础路径</h3>
+            <p class="section-description">从项目目录开始，输出默认保存至 release 文件夹。</p>
+            <div class="field-row path-field">
               <label for="projectDir">Electron 项目目录</label>
               <div class="input-with-btn">
-                <input id="projectDir" type="text" placeholder="请选择包含可执行逻辑的目录" />
+                <input id="projectDir" type="text" placeholder="选择 Electron 项目或纯 HTML 目录" aria-describedby="projectDirHelp" />
                 <button id="pickProjectBtn" type="button">浏览</button>
+                <button id="loadProjectDefaultsBtn" type="button" class="secondary inspect-button">读取项目信息</button>
               </div>
+              <p id="projectDirHelp" class="field-help">支持已有 Electron 项目；纯 HTML 目录无需 package.json。</p>
             </div>
-            <div class="field-row">
+            <div class="field-row path-field">
               <label for="outputDir">打包输出目录</label>
               <div class="input-with-btn">
                 <input id="outputDir" type="text" placeholder="默认为 release 文件夹" />
                 <button id="pickOutputBtn" type="button">浏览</button>
               </div>
             </div>
-            <div class="section-title">应用信息</div>
+            <h3 class="section-title">应用信息</h3>
             <div class="grid two-col">
               <div class="field-row"><label for="appId">应用程序 ID (App ID)</label><input id="appId" type="text" placeholder="如 com.example.desktop" /></div>
               <div class="field-row"><label for="productName">产品名称 (Product Name)</label><input id="productName" type="text" placeholder="例如：我的应用" /></div>
@@ -73,7 +73,7 @@
           </div>
 
           <div id="tab-build" class="tab-content">
-            <div class="section-title">构建策略</div>
+            <h3 class="section-title">构建策略</h3>
             <div class="preset-card">
               <div class="preset-head">
                 <div class="field-row">
@@ -89,7 +89,7 @@
               </div>
               <p id="presetHint" class="preset-hint">当前预设: 发布推荐。平衡构建速度、兼容性与产物质量。</p>
             </div>
-            <div class="grid three-col">
+            <div class="grid two-col">
               <div class="field-row">
                 <label for="compression">代码压缩级别</label>
                 <select id="compression">
@@ -117,7 +117,7 @@
                 <input id="npmRebuild" type="checkbox" checked />
               </div>
             </div>
-            <div class="section-title">运行时高级控制</div>
+            <h3 class="section-title">运行时高级控制</h3>
             <div class="grid three-col">
               <div class="field-row">
                 <label for="electronVersion">Electron 版本</label>
@@ -159,8 +159,7 @@
               </div>
             </div>
             <div class="field-row">
-              <label>说明</label>
-              <input type="text" value="Chromium/Node.js 覆盖会以环境变量注入构建流程，适用于原生依赖编译与自定义脚本控制。" readonly />
+              <p class="field-help">Chromium / Node.js 覆盖以环境变量注入构建流程，适用于原生依赖编译与自定义脚本。</p>
               <p id="runtimeVersionsHint" class="preset-hint">启动时自动检查官方版本，离线时使用最近缓存或内置候选。</p>
             </div>
             <div class="field-row checkbox-row">
@@ -170,9 +169,9 @@
             <div class="field-row checkbox-row inline-checks">
               <label>目标操作系统</label>
               <div class="checks">
-                <label><input id="targetWindows" type="checkbox" checked /> <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M4 4h7v7H4z"/><path d="M13 4h7v7h-7z"/><path d="M4 13h7v7H4z"/><path d="M13 13h7v7h-7z"/></svg> Windows</label>
-                <label><input id="targetLinux" type="checkbox" /> <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg> Linux</label>
-                <label><input id="targetMac" type="checkbox" /> <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M12 20.94c1.5 0 2.75 1.06 4 1.06 3 0 6-8 6-12.22A4.91 4.91 0 0 0 17 5c-2.22 0-4 1.44-5 2-1-.56-2.78-2-5-2a4.9 4.9 0 0 0-5 4.78C2 14 5 22 8 22c1.25 0 2.5-1.06 4-1.06Z"/><path d="M10 2c1 .5 2 2 2 5h-2c0-3-1-4-2-5Z"/></svg> macOS</label>
+                <label><input id="targetWindows" type="checkbox" checked /> <svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M4 4h7v7H4z"/><path d="M13 4h7v7h-7z"/><path d="M4 13h7v7H4z"/><path d="M13 13h7v7h-7z"/></svg> Windows</label>
+                <label><input id="targetLinux" type="checkbox" /> <svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg> Linux</label>
+                <label><input id="targetMac" type="checkbox" /> <svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M12 20.94c1.5 0 2.75 1.06 4 1.06 3 0 6-8 6-12.22A4.91 4.91 0 0 0 17 5c-2.22 0-4 1.44-5 2-1-.56-2.78-2-5-2a4.9 4.9 0 0 0-5 4.78C2 14 5 22 8 22c1.25 0 2.5-1.06 4-1.06Z"/><path d="M10 2c1 .5 2 2 2 5h-2c0-3-1-4-2-5Z"/></svg> macOS</label>
               </div>
             </div>
             <div class="quick-platform-actions">
@@ -183,13 +182,13 @@
 
           
           <div id="tab-platform" class="tab-content">
-            <div class="section-title">按操作系统区分的平台配置</div>
+            <h3 class="section-title">平台构建参数</h3>
             <div class="platform-cards">
               
-              <!-- Windows -->
+              <!-- Windows 平台配置 -->
               <div class="os-card">
                 <div class="os-header">
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"></rect><line x1="3" x2="21" y1="9" y2="9"></line><line x1="9" x2="9" y1="21" y2="9"></line></svg>
+                  <svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"></rect><line x1="3" x2="21" y1="9" y2="9"></line><line x1="9" x2="9" y1="21" y2="9"></line></svg>
                   <h3>Windows 平台</h3>
                 </div>
                 <div class="os-body grid two-col">
@@ -214,17 +213,17 @@
                       </select>
                     </div>
                     <div class="field-row checkbox-row">
-                      <label for="winPortable">强制额外输出纯绿便携版</label>
+                      <label for="winPortable">额外输出 portable 便携版</label>
                       <input id="winPortable" type="checkbox" />
                     </div>
                   </div>
                 </div>
               </div>
 
-              <!-- Linux -->
+              <!-- Linux 平台配置 -->
               <div class="os-card">
                 <div class="os-header">
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" x2="20" y1="19" y2="19"></line></svg>
+                  <svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" x2="20" y1="19" y2="19"></line></svg>
                   <h3>Linux 平台</h3>
                 </div>
                 <div class="os-body grid two-col">
@@ -265,10 +264,10 @@
                 </div>
               </div>
 
-              <!-- macOS -->
+              <!-- macOS 平台配置 -->
               <div class="os-card">
                 <div class="os-header">
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"></path></svg>
+                  <svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"></path></svg>
                   <h3>macOS 平台</h3>
                 </div>
                 <div class="os-body grid two-col">
@@ -307,12 +306,12 @@
             </div>
           </div>
 <div id="tab-installer" class="tab-content">
-            <div class="section-title">安装向导体验 (Windows NSIS)</div>
+            <h3 class="section-title">安装向导体验 (Windows NSIS)</h3>
             <div class="grid four-col">
-              <label><input id="nsisOneClick" type="checkbox" checked /> 一键快速静默安装</label>
-              <label><input id="nsisPerMachine" type="checkbox" /> 针对该电脑所有用户</label>
-              <label><input id="nsisAllowElevation" type="checkbox" checked /> 允许提示管理员提权</label>
-              <label><input id="nsisAllowChangeDir" type="checkbox" /> 安装时可自选路径</label>
+              <label><input id="nsisOneClick" type="checkbox" checked /> 一键安装</label>
+              <label><input id="nsisPerMachine" type="checkbox" /> 为所有用户安装</label>
+              <label><input id="nsisAllowElevation" type="checkbox" checked /> 允许请求管理员权限</label>
+              <label><input id="nsisAllowChangeDir" type="checkbox" /> 允许选择安装目录</label>
             </div>
             <div class="grid two-col">
               <div class="field-row"><label for="nsisShortcutName">程序菜单快捷方式名称</label><input id="nsisShortcutName" type="text" placeholder="留空则默认为应用产品名称" /></div>
@@ -326,72 +325,76 @@
               </div>
             </div>
             <div class="field-row checkbox-row">
-              <label for="nsisDeleteAppData">应用卸载时，一同清除其用户数据存放夹</label>
+              <label for="nsisDeleteAppData">卸载时删除应用用户数据</label>
               <input id="nsisDeleteAppData" type="checkbox" />
             </div>
           </div>
 
           <div id="tab-window" class="tab-content">
-            <div class="section-title">打包后主窗口尺寸与特性约束</div>
+            <h3 class="section-title">主窗口设置</h3>
             <div class="grid three-col">
-              <div class="field-row"><label for="windowTitle">打开时窗口默认标题</label><input id="windowTitle" type="text" placeholder="例如：我的主页程序" /></div>
-              <div class="field-row"><label for="windowWidth">初次打开宽度 (像素)</label><input id="windowWidth" type="text" placeholder="如：1280" /></div>
-              <div class="field-row"><label for="windowHeight">初次打开高度 (像素)</label><input id="windowHeight" type="text" placeholder="如：800" /></div>
+              <div class="field-row"><label for="windowTitle">窗口标题</label><input id="windowTitle" type="text" placeholder="例如：我的主页程序" /></div>
+              <div class="field-row"><label for="windowWidth">初始宽度 (px)</label><input id="windowWidth" type="text" placeholder="如：1280" /></div>
+              <div class="field-row"><label for="windowHeight">初始高度 (px)</label><input id="windowHeight" type="text" placeholder="如：800" /></div>
             </div>
             <div class="grid four-col">
-              <label><input id="windowShowMenuBar" type="checkbox" checked /> 启用顶部原生的菜单栏</label>
-              <label><input id="windowFrame" type="checkbox" checked /> 展现系统级标题栏/边框</label>
-              <label><input id="windowResizable" type="checkbox" checked /> 准许最终用户缩放窗口</label>
-              <label><input id="windowFullscreenable" type="checkbox" checked /> 允许利用系统功能全屏</label>
+              <label><input id="windowShowMenuBar" type="checkbox" checked /> 显示原生菜单栏</label>
+              <label><input id="windowFrame" type="checkbox" checked /> 显示标题栏与边框</label>
+              <label><input id="windowResizable" type="checkbox" checked /> 允许调整窗口大小</label>
+              <label><input id="windowFullscreenable" type="checkbox" checked /> 允许全屏</label>
             </div>
             <div class="field-row checkbox-row">
-              <label for="windowAlwaysOnTop">启动后使应用界面强制停留在最顶层</label>
+              <label for="windowAlwaysOnTop">窗口始终置顶</label>
               <input id="windowAlwaysOnTop" type="checkbox" />
             </div>
-            <div class="section-title">程序呈现图标</div>
+            <h3 class="section-title">应用图标</h3>
             <div class="grid three-col icon-grid">
               <div class="field-row">
-                <label for="winIcon">Win 打包构建图标 (.ico)</label>
+                <label for="winIcon">Windows 图标 (.ico / .png)</label>
                 <div class="input-with-btn"><input id="winIcon" type="text" placeholder="留空使用 Electron 默认" /><button id="pickWinIconBtn" type="button">浏览</button></div>
               </div>
               <div class="field-row">
-                <label for="linuxIcon">Linux 企鹅图标 (.png)</label>
+                <label for="linuxIcon">Linux 图标 (.png / .svg)</label>
                 <div class="input-with-btn"><input id="linuxIcon" type="text" placeholder="支持 png | 建议 512x512" /><button id="pickLinuxIconBtn" type="button">浏览</button></div>
               </div>
               <div class="field-row">
-                <label for="macIcon">Mac Apple图标 (.icns)</label>
-                <div class="input-with-btn"><input id="macIcon" type="text" placeholder="必需 .icns 格式大图片" /><button id="pickMacIconBtn" type="button">浏览</button></div>
+                <label for="macIcon">macOS 图标 (.icns / .png)</label>
+                <div class="input-with-btn"><input id="macIcon" type="text" placeholder="选择 .icns 或 .png 图标" /><button id="pickMacIconBtn" type="button">浏览</button></div>
               </div>
             </div>
           </div>
 
           <div id="tab-resources" class="tab-content">
-            <div class="section-title">打包构建文件选择清单</div>
+            <h3 class="section-title">文件与资源规则</h3>
             <div class="grid two-col">
               <div class="field-row">
-                <label for="filesGlobs">指明要封装进 Asar 的内容 (换行区分多条件)</label>
+                <label for="filesGlobs">打包文件规则（每行一个）</label>
                 <textarea id="filesGlobs" rows="6" placeholder="dist/**
 main.js
 package.json"></textarea>
               </div>
               <div class="field-row">
-                <label for="extraResources">额外资源附件 (不被加密，随主程序一同发布复制)</label>
+                <label for="extraResources">额外资源（复制到 resources 目录）</label>
                 <textarea id="extraResources" rows="6" placeholder="assets/**
 config/**
 readme.txt"></textarea>
               </div>
             </div>
             <div class="field-row">
-              <label for="asarUnpack">需排除加密的零散文件模块 (每行一个，防底层 C++ 组件缺失异常)</label>
+              <label for="asarUnpack">不归档的文件（asarUnpack，每行一个）</label>
               <textarea id="asarUnpack" rows="4" placeholder="**/*.node
 resources/native/**"></textarea>
             </div>
           </div>
 
-          <div class="actions">
-            <div id="actionFeedback" class="action-feedback" aria-live="polite"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1.3.5 2.6 1.5 3.5.8.8 1.3 1.5 1.5 2.5"></path><path d="M9 18h6"></path><path d="M10 22h4"></path></svg> 配置完成后，请点击“前往输出页面”再开始打包并查看日志</div>
+
+            </section>
           </div>
-        </section>
+        </div>
+        <footer class="actions">
+          <div id="actionFeedback" class="action-feedback" role="status" aria-live="polite" aria-atomic="true">配置完成后，前往输出页面开始打包。</div>
+          <button id="goOutputPageBtn" type="button" class="primary">前往输出页面 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="icon" aria-hidden="true" focusable="false"><path d="M4 12h16m-6-6 6 6-6 6"/></svg></button>
+        </footer>
       </div>
     </main>
     <script src="./config.js"></script>
