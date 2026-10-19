@@ -13,7 +13,7 @@ process.emitWarning = (warning, ...args) => {
   return originalEmitWarning(warning, ...args);
 };
 
-const { app, BrowserWindow, dialog, ipcMain, nativeImage } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } = require("electron");
 const fs = require("node:fs/promises");
 const fssync = require("node:fs");
 const path = require("node:path");
@@ -64,6 +64,8 @@ const RUNTIME_VERSION_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const RUNTIME_VERSION_REQUEST_TIMEOUT_MS = 8000;
 const ELECTRON_RELEASES_URL = "https://releases.electronjs.org/releases.json";
 const NODE_RELEASES_URL = "https://nodejs.org/dist/index.json";
+const APP_LATEST_RELEASE_URL = "https://api.github.com/repos/Double-Cloth/html2exe/releases/latest";
+const APP_RELEASES_URL = "https://github.com/Double-Cloth/html2exe/releases";
 const DEFAULT_RUNTIME_VERSION_OPTIONS = {
   electron: [
     { value: "44.3.0", label: "最新稳定版" },
@@ -94,6 +96,7 @@ const DEFAULT_RUNTIME_VERSION_OPTIONS = {
 };
 
 let cachedBuilderBootstrapPromise = null;
+let appUpdateCheckStarted = false;
 
 function normalizeMirrorBaseUrl(value) {
   if (typeof value !== "string") {
@@ -967,6 +970,57 @@ async function fetchJsonWithTimeout(url, timeoutMs = RUNTIME_VERSION_REQUEST_TIM
   }
 }
 
+function getNewAppRelease(release, currentVersion) {
+  if (!release || release.draft || release.prerelease || typeof release.tag_name !== "string") {
+    return null;
+  }
+
+  const tag = release.tag_name.trim();
+  const latestVersion = tag.replace(/^v/i, "");
+  const current = /^(\d+\.\d+\.\d+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(currentVersion);
+  if (!isStableThreePartVersion(latestVersion) || !current ||
+      ![latestVersion, current[1]].every((version) => version.split(".").every((part) => Number.isSafeInteger(Number(part))))) {
+    return null;
+  }
+
+  const comparison = compareNumericVersionsDescending(latestVersion, current[1]);
+  // 同一版本的正式版优先于预发布版，构建元数据不影响版本顺序。
+  if (comparison > 0 || (comparison === 0 && !current[2])) {
+    return null;
+  }
+  return { version: latestVersion, url: `${APP_RELEASES_URL}/tag/${encodeURIComponent(tag)}` };
+}
+
+async function checkForAppUpdates() {
+  if (appUpdateCheckStarted || !mainWindow || mainWindow.isDestroyed()) return;
+  appUpdateCheckStarted = true;
+  const window = mainWindow;
+
+  try {
+    const currentVersion = app.getVersion();
+    const release = await fetchJsonWithTimeout(APP_LATEST_RELEASE_URL);
+    const update = getNewAppRelease(release, currentVersion);
+    if (!update || window !== mainWindow || window.isDestroyed()) return;
+
+    const { response } = await dialog.showMessageBox(window, {
+      type: "info",
+      title: "发现新版本",
+      message: `html2exe ${update.version} 已发布`,
+      detail: `当前版本：${currentVersion}\n最新版本：${update.version}\n\n可前往 GitHub 发布页查看更新说明并下载新版本。`,
+      buttons: ["前往发布页", "稍后再说"],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (response === 0 && window === mainWindow && !window.isDestroyed()) {
+      await shell.openExternal(update.url);
+    }
+  } catch (error) {
+    // 自动检查失败时保持安静，不影响启动、配置与构建；下次启动重新检查。
+    console.warn("自动检查更新失败：", error.message);
+  }
+}
+
 async function readRuntimeVersionOptionsCache() {
   try {
     const parsed = JSON.parse(await fs.readFile(RUNTIME_VERSION_CACHE_PATH, "utf-8"));
@@ -1198,6 +1252,7 @@ function createWindow() {
   });
   mainWindow.webContents.on("will-attach-webview", (event) => event.preventDefault());
   mainWindow.on("closed", () => { mainWindow = null; });
+  mainWindow.once("ready-to-show", () => { void checkForAppUpdates(); });
   mainWindow.loadFile(path.join(__dirname, "src", "index.html"));
 }
 

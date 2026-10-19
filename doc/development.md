@@ -47,6 +47,8 @@ IPC 操作通常返回 `{ success, ... }`；`builder:run` 外层表示调用结�
 
 界面使用 CSP，禁止外部页面导航、新窗口与 webview。保持 `contextIsolation: true`、`nodeIntegration: false`，不要为增加功能扩大渲染页权限。日志订阅返回取消函数，新增生命周期逻辑时应正确释放监听。
 
+应用更新检查完全在主进程执行：窗口首次 `ready-to-show` 后，复用带 8 秒超时的 JSON 请求访问 GitHub `Double-Cloth/html2exe` 的 `/releases/latest`。每次进程运行只检查一次，按数值比较三段正式版本号，兼容 `v` 前缀；同版本正式版高于当前预发布版，构建元数据不影响顺序。仅发现更高版本时使用原生对话框提示；用户选择前往发布页后，以固定仓库地址和编码后的 tag 构造 URL，通过 `shell.openExternal` 打开，不使用服务端返回的任意链接。网络失败仅记录到控制台，窗口关闭后不再弹窗；不新增 IPC、下载或安装逻辑。
+
 ## 配置模型与扩展方式
 
 `src/config.js` 负责配置对象归一化与共享构建校验。已知布尔字段必须是真正的布尔值；其余支持有限数值、字符串与 `null`，归一化后为字符串。配置拒绝嵌套值及原型相关键，文件规则对象通过文本框中的单行 JSON 传递。
@@ -162,6 +164,7 @@ git diff --check
 | `self-build.test.js` | 自打包参数、目录清理与产物发布 |
 | `toolchain.test.js` | npm 定位、工具链完整性、模板不落盘与链接边界 |
 | `fs-rename-retry.test.js` | Windows rename 重试 |
+| `app-updates.test.js` | 更新检测启动时机、版本比较、提示与浏览器跳转、网络失败及窗口关闭 |
 
 单元测试通过后，按改动范围补充实际验证：
 
