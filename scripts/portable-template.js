@@ -26,26 +26,18 @@ function createPersistentPortableNsiScript(script) {
   const withVisibleProgress = source
     .replace(
       /(AutoCloseWindow\s+True[^\S\r\n]*(?:\r?\n))/,
-      'LoadLanguageFile "${NSISDIR}\\Contrib\\Language files\\English.nlf"\n$1'
-    )
-    .replace(
-      /(AutoCloseWindow\s+True[^\S\r\n]*(?:\r?\n))/,
-      "$1ShowInstDetails show\n"
-    )
-    .replace(
-      /(RequestExecutionLevel\s+\$\{REQUEST_EXECUTION_LEVEL\}[^\S\r\n]*(?:\r?\n))/,
-      "$1Page instfiles\n"
+      (_, autoClose) => `${autoClose}${fs.readFileSync(path.join(__dirname, "portable-ui.nsh"), "utf8")}\n`
     )
     .replace(
       /([ \t]*)!ifndef SPLASH_IMAGE[^\S\r\n]*(?:\r?\n)[ \t]*SetSilent silent[^\S\r\n]*(?:\r?\n)[ \t]*!endif/,
-      "$1; Self-extract mode shows the extraction progress window."
+      "$1; 自解压时显示进度窗口。"
     );
   const withPersistentDir = withVisibleProgress.replace(tempDirBlockPattern, persistentDirBlock);
   const launchAppPattern =
     /^([ \t]*)ExecWait\s+"\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}[^"]*"\s+\$0[^\S\r\n]*(?:\r?\n[ \t]*SetErrorLevel\s+\$0[^\S\r\n]*)?/m;
   const withoutLaunch = withPersistentDir.replace(
     launchAppPattern,
-    "$1; Self-extract mode does not launch the app after extraction."
+    "$1; 自解压完成后由用户手动启动应用。"
   );
   const exitCleanupPattern = /([ \t]*SetOutPath \$EXEDIR[^\S\r\n]*(?:\r?\n)(?:[ \t]*(?:\r?\n))*)([ \t]*)RMDir \/r \$INSTDIR(?=\r?\n|$)/;
   if (!exitCleanupPattern.test(withoutLaunch)) {
@@ -54,7 +46,7 @@ function createPersistentPortableNsiScript(script) {
 
   return withoutLaunch.replace(
     exitCleanupPattern,
-    "$1$2System::Call 'shell32.dll::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'\n$2RMDir /r \"$$PLUGINSDIR\"\n$2MessageBox MB_OK \"Extraction complete.\"\n$2; persistent portable mode keeps unpacked files beside the executable."
+    "$1$2System::Call 'shell32.dll::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'\n$2RMDir /r \"$$PLUGINSDIR\"\n$2MessageBox MB_OK|MB_ICONINFORMATION \"解压完成$\\r$\\n$\\r$\\n文件保存在：$\\r$\\n$INSTDIR$\\r$\\n$\\r$\\n请打开该目录，手动运行 ${APP_EXECUTABLE_FILENAME}。\" /SD IDOK\n$2; 保留 EXE 所在目录中的解压文件。"
   );
 }
 

@@ -122,6 +122,8 @@ npm audit --prefix vendor/toolchain
 
 portable 行为集中在 `portable-template.js`：先校验上游模板，再在构建子进程内拦截构建器所用的 `fs-extra.readFile`，替换读取内容。共享的 `portable.nsi` 不落盘修改；升级 builder 后必须验证模板兼容性和实际自解压行为。
 
+自解压进度窗口由 `scripts/portable-ui.nsh` 定义，随模板一起在内存中注入，使用 NSIS 自带的现代窗口资源，不增加运行时依赖。配色遵循 `DESIGN.md`，保留目标应用图标，文件详情默认收起；窗口按对话框单位缩减日志区，跟随系统 DPI 缩放。完成提示显示实际解压目录和主程序文件名，仍需用户手动启动应用。
+
 ## 自打包与产物
 
 `npm run build` 依次执行 `prebuild` 和 `scripts/build-self.js`，命令参数继续传给 electron-builder。默认 Windows 目标为 `portable`，其他平台使用对应配置或显式参数。

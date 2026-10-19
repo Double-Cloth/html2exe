@@ -896,9 +896,9 @@ test("persistent portable NSIS script extracts beside exe and keeps files after 
 
   const patched = require("../scripts/portable-template").createPersistentPortableNsiScript(template);
 
-  assert.match(patched, /LoadLanguageFile "\$\{NSISDIR\}\\Contrib\\Language files\\English\.nlf"/);
-  assert.match(patched, /ShowInstDetails show/);
-  assert.match(patched, /Page instfiles/);
+  assert.match(patched, /LoadLanguageFile "\$\{NSISDIR\}\\Contrib\\Language files\\SimpChinese\.nlf"/);
+  assert.match(patched, /ShowInstDetails hide/);
+  assert.match(patched, /PageEx instfiles/);
   assert.doesNotMatch(patched, /SetSilent silent/);
   assert.match(patched, /\$EXEDIR\\\$\{UNPACK_DIR_NAME\}/);
   assert.doesNotMatch(patched, /\$TEMP\\\$\{UNPACK_DIR_NAME\}/);
@@ -906,9 +906,9 @@ test("persistent portable NSIS script extracts beside exe and keeps files after 
   assert.doesNotMatch(patched, /SetErrorLevel \$0/);
   assert.match(patched, /RMDir \/r "\$PLUGINSDIR"/);
   assert.match(patched, /SHChangeNotify\(i 0x08000000/);
-  assert.match(patched, /MessageBox MB_OK "Extraction complete\."/);
-  assert.doesNotMatch(patched, /[\u4e00-\u9fff]/);
-  assert.match(patched, /persistent portable mode keeps unpacked files/);
+  assert.match(patched, /MessageBox MB_OK\|MB_ICONINFORMATION "解压完成/);
+  assert.match(patched, /请打开该目录，手动运行 \$\{APP_EXECUTABLE_FILENAME\}/);
+  assert.match(patched, /保留 EXE 所在目录中的解压文件/);
   assert.equal((patched.match(/RMDir \/r \$INSTDIR/g) || []).length, 1);
 });
 
