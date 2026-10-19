@@ -12,15 +12,13 @@
       <aside class="sidebar" aria-label="输出导航">
         <div class="brand"><div class="brand-top"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="brand-mark" aria-hidden="true" focusable="false"><path d="m12 3 9 5v8l-9 5-9-5V8z"/><path d="m3 8 9 5 9-5M12 13v8M7.5 5.5l9 5"/></svg><h1>html2exe</h1></div><p>Electron 打包器</p><span id="appVersion" class="brand-version" aria-label="应用版本号">v3.0.0</span></div>
         <nav class="nav-menu" aria-label="页面导航">
-          <button id="goConfigPageBtn" class="nav-item" type="button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="icon" aria-hidden="true" focusable="false"><path d="m15 18-6-6 6-6"/></svg> 返回配置页面</button>
+          <button id="goConfigPageBtn" class="nav-item" type="button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="icon" aria-hidden="true" focusable="false"><path d="m15 18-6-6 6-6"/></svg> 返回配置</button>
         </nav>
-        <div class="sidebar-actions"><p class="sidebar-note">构建过程与日志会实时显示。<br />构建完成后，可在输出目录查看产物。</p></div>
       </aside>
       <div class="content-area">
-        <header class="workspace-toolbar"><span class="toolbar-title">构建输出</span><span class="field-help">html2exe / 输出中心</span></header>
         <div class="workspace-scroll">
           <div class="workspace-inner">
-            <header class="page-heading"><div><h2 id="pageTitle">构建输出</h2><p class="page-description">从配置到桌面应用，跟进每一步构建。</p></div><p class="context-note">准备好后，点击“开始打包”。</p></header>
+            <header class="page-heading"><div><h2 id="pageTitle">构建输出</h2></div></header>
             <div class="output-workspace">
               <section class="progress-panel" aria-labelledby="progressTitle">
                 <div class="progress-head"><h3 id="progressTitle">构建进度</h3><span id="overallStatus" class="overall-status idle" role="status" aria-live="polite">待命</span></div>
@@ -36,13 +34,12 @@
               <section class="log-panel" aria-labelledby="logTitle">
                 <div class="log-head"><h3 id="logTitle"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="icon" aria-hidden="true" focusable="false"><path d="m4 7 5 5-5 5m8 0h8"/></svg> 实时构建日志</h3><button id="clearLogBtn" type="button">清空日志</button></div>
                 <pre id="logOutput" tabindex="0" aria-label="实时构建日志内容">等待开始...</pre>
-                <div class="terminal-foot">日志实时更新 · 支持横向滚动查看完整内容</div>
               </section>
             </div>
           </div>
         </div>
         <footer class="actions">
-          <div id="actionFeedback" class="action-feedback" role="status" aria-live="polite" aria-atomic="true">输出页面已就绪。</div>
+          <div id="actionFeedback" class="action-feedback" role="status" aria-live="polite" aria-atomic="true"></div>
           <div class="output-actions"><button id="cancelBuildBtn" type="button" class="danger" disabled><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="icon" aria-hidden="true" focusable="false"><rect x="6" y="6" width="12" height="12" rx="1"/></svg> 取消构建</button><button id="buildBtn" type="button" class="primary"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="icon" aria-hidden="true" focusable="false"><path d="m8 5 11 7-11 7z"/></svg> 开始打包</button></div>
         </footer>
       </div>

@@ -300,9 +300,7 @@ function setActionFeedback(text, level = "pending", autoClearMs = 0) {
   if (autoClearMs > 0 && level !== "error") {
     actionFeedbackTimer = setTimeout(() => {
       dom.actionFeedback.classList.remove("pending", "success", "error");
-      dom.actionFeedback.textContent = dom.logOutput
-        ? "可开始打包，并在此查看构建结果。"
-        : "配置完成后，前往输出页面开始打包。";
+      dom.actionFeedback.textContent = "";
       actionFeedbackTimer = null;
     }, autoClearMs);
   }
@@ -542,7 +540,7 @@ function setPresetHint(presetKey) {
     return;
   }
   const preset = BUILD_PRESETS[presetKey] || BUILD_PRESETS.release;
-  dom.presetHint.textContent = `当前预设: ${preset.label}。${preset.hint}`;
+  dom.presetHint.textContent = preset.hint;
 }
 
 function syncTargetDependentControls() {
@@ -1260,7 +1258,6 @@ init().catch((error) => {
 function initTabs() {
   const navItems = Array.from(document.querySelectorAll(".nav-item[data-tab]"));
   const pageTitle = document.getElementById("pageTitle");
-  const pageDescription = document.getElementById("pageDescription");
   const workspaceScroll = document.getElementById("workspaceScroll");
   const navMenu = navItems[0]?.parentElement;
   let selectedTab = null;
@@ -1292,14 +1289,6 @@ function initTabs() {
       interfaceAnimations.get(indicator)?.cancel();
     }
   }
-  const descriptions = {
-    basic: "选择项目目录，填写应用信息。",
-    build: "选择构建预设，配置运行时与目标平台。",
-    platform: "分别设置 Windows、Linux 与 macOS 的构建产物。",
-    installer: "调整 Windows NSIS 安装向导与快捷方式。",
-    window: "配置应用窗口的初始状态与各平台图标。",
-    resources: "指定打包文件、附加资源与不归档的文件。",
-  };
 
   function activateTab(button) {
     if (selectedTab === button) return;
@@ -1316,7 +1305,6 @@ function initTabs() {
       }
     });
     if (pageTitle) pageTitle.textContent = button.textContent.trim();
-    if (pageDescription) pageDescription.textContent = descriptions[button.dataset.tab] || "";
     if (workspaceScroll) workspaceScroll.scrollTop = 0;
     moveIndicator(button, Boolean(selectedTab));
     if (selectedTab) {

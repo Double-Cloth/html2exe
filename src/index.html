@@ -24,7 +24,6 @@
           <button id="exportConfigBtn" type="button" class="secondary"><svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M12 21V9"></path><path d="m17 14-5-5-5 5"></path><path d="M5 3h14"></path></svg> 导出配置</button>
           <button id="resetConfigBtn" type="button" class="danger"><svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"></path><path d="M3 3v5h5"></path></svg> 重置配置</button>
           <button id="clearCacheBtn" type="button" class="warning"><svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg> 清理构建缓存</button>
-          <p class="sidebar-note">配置项目，构建桌面应用。</p>
         </div>
       </aside>
       <div class="content-area">
@@ -32,13 +31,11 @@
         <div class="workspace-scroll" id="workspaceScroll">
           <div class="workspace-inner">
             <header class="page-heading">
-              <div><h2 id="pageTitle">基础配置</h2><p id="pageDescription" class="page-description">选择项目目录，填写应用信息。</p></div>
-              <p class="context-note">支持 Electron 项目与纯 HTML 目录。</p>
+              <div><h2 id="pageTitle">基础配置</h2></div>
             </header>
             <section class="form-panel" aria-labelledby="pageTitle">
           <div id="tab-basic" class="tab-content active">
             <h3 class="section-title">基础路径</h3>
-            <p class="section-description">从项目目录开始，输出默认保存至 release 文件夹。</p>
             <div class="field-row path-field">
               <label for="projectDir">Electron 项目目录</label>
               <div class="input-with-btn">
@@ -46,7 +43,7 @@
                 <button id="pickProjectBtn" type="button">浏览</button>
                 <button id="loadProjectDefaultsBtn" type="button" class="secondary inspect-button">读取项目信息</button>
               </div>
-              <p id="projectDirHelp" class="field-help">支持已有 Electron 项目；纯 HTML 目录无需 package.json。</p>
+              <p id="projectDirHelp" class="field-help">纯 HTML 目录无需 package.json。</p>
             </div>
             <div class="field-row path-field">
               <label for="outputDir">打包输出目录</label>
@@ -87,7 +84,7 @@
                 </div>
                 <button id="applyPresetBtn" type="button" class="secondary">应用预设</button>
               </div>
-              <p id="presetHint" class="preset-hint">当前预设: 发布推荐。平衡构建速度、兼容性与产物质量。</p>
+              <p id="presetHint" class="preset-hint">平衡构建速度、兼容性与产物质量。</p>
             </div>
             <div class="grid two-col">
               <div class="field-row">
@@ -392,7 +389,7 @@ resources/native/**"></textarea>
           </div>
         </div>
         <footer class="actions">
-          <div id="actionFeedback" class="action-feedback" role="status" aria-live="polite" aria-atomic="true">配置完成后，前往输出页面开始打包。</div>
+          <div id="actionFeedback" class="action-feedback" role="status" aria-live="polite" aria-atomic="true"></div>
           <button id="goOutputPageBtn" type="button" class="primary">前往输出页面 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="icon" aria-hidden="true" focusable="false"><path d="M4 12h16m-6-6 6 6-6 6"/></svg></button>
         </footer>
       </div>
