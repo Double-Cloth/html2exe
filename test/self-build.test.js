@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const { createPersistentPortableNsiScript } = require("../scripts/portable-template");
 
 const repoRoot = path.resolve(__dirname, "..");
 
@@ -73,7 +74,7 @@ test("self build wrapper patches portable template for Windows builds", () => {
   assert.equal(selfBuild.shouldPatchPortableTemplate(["--linux"], "win32"), false);
   assert.equal(selfBuild.shouldPatchPortableTemplate(["--win"], "linux"), true);
 
-  const patched = selfBuild.createPersistentPortableNsiScript(template);
+  const patched = createPersistentPortableNsiScript(template);
   assert.match(patched, /LoadLanguageFile "\$\{NSISDIR\}\\Contrib\\Language files\\English\.nlf"/);
   assert.match(patched, /ShowInstDetails show/);
   assert.match(patched, /Page instfiles/);

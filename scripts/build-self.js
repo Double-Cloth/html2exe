@@ -1,9 +1,8 @@
 const { spawn } = require("node:child_process");
 const fs = require("node:fs/promises");
-const fssync = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { createPersistentPortableNsiScript, resolvePortableTemplatePathFromBuilderCli, validatePortableTemplate } = require("./portable-template");
+const { validatePortableTemplate } = require("./portable-template");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -201,11 +200,6 @@ async function publishTopLevelExecutables(outputDir, finalOutputDir, options = {
   }
 }
 
-async function applyPersistentPortableTemplatePatch(builderCliPath) {
-  validatePortableTemplate(builderCliPath);
-  return async () => {};
-}
-
 function createElectronBuilderCommand(builderCliPath, argv, options = {}) {
   return {
     args: [options.runnerPath || resolveElectronBuilderRunnerPath(), builderCliPath, ...argv],
@@ -239,9 +233,9 @@ async function buildSelf(argv = process.argv.slice(2), options = {}) {
   const builderCliPath = options.builderCliPath || resolveLocalBuilderCliPath();
   await cleanupPreBuildOutputs(argv, options);
   const invocation = createBuildInvocation(argv, options);
-  const restorePortableTemplate = shouldPatchPortableTemplate(argv, options.platform)
-    ? await applyPersistentPortableTemplatePatch(builderCliPath)
-    : async () => {};
+  if (shouldPatchPortableTemplate(argv, options.platform)) {
+    validatePortableTemplate(builderCliPath);
+  }
 
   let keepOutput = false;
   try {
@@ -252,19 +246,15 @@ async function buildSelf(argv = process.argv.slice(2), options = {}) {
       keepOutput = false;
     }
   } finally {
-    try {
-      await restorePortableTemplate();
-    } finally {
-      if (invocation.isolated && !keepOutput) {
-        await removePathWithRetry(invocation.outputDir, {
-          projectRoot: options.projectRoot || PROJECT_ROOT,
-          allowedRoots: invocation.cleanupRoots,
-          attempts: options.attempts,
-          retryDelayMs: options.retryDelayMs,
-        });
-      } else if (keepOutput) {
-        console.error(`发布失败，构建产物已保留在: ${invocation.outputDir}`);
-      }
+    if (invocation.isolated && !keepOutput) {
+      await removePathWithRetry(invocation.outputDir, {
+        projectRoot: options.projectRoot || PROJECT_ROOT,
+        allowedRoots: invocation.cleanupRoots,
+        attempts: options.attempts,
+        retryDelayMs: options.retryDelayMs,
+      });
+    } else if (keepOutput) {
+      console.error(`发布失败，构建产物已保留在: ${invocation.outputDir}`);
     }
   }
 }
@@ -277,15 +267,12 @@ if (require.main === module) {
 }
 
 module.exports = {
-  applyPersistentPortableTemplatePatch,
   buildSelf,
   cleanupPreBuildOutputs,
   createBuildInvocation,
   createElectronBuilderCommand,
-  createPersistentPortableNsiScript,
   getPreBuildCleanupTargets,
   publishTopLevelExecutables,
   resolveSelfBuildOutputRoot,
-  resolvePortableTemplatePathFromBuilderCli,
   shouldPatchPortableTemplate,
 };

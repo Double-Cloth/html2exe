@@ -93,3 +93,38 @@ test("自打包发布失败后保留临时产物供恢复", async (t) => {
     selfBuildOutputRoot: tempOutput, buildId: "failed-publish", log: false }));
   assert.equal(fs.readFileSync(path.join(tempOutput, "failed-publish", "sample.exe"), "utf8"), "完整产物");
 });
+
+for (const exitCode of [0, 1]) {
+  test(`自打包子进程${exitCode === 0 ? "成功" : "失败"}后清理本次临时目录`, async (t) => {
+    const root = tempRoot(t);
+    const project = path.join(root, "project");
+    const staging = path.join(root, "staging");
+    const output = path.join(staging, "current-build");
+    const sibling = path.join(staging, "other-build", "keep.txt");
+    fs.mkdirSync(project);
+    fs.mkdirSync(path.dirname(sibling), { recursive: true });
+    fs.writeFileSync(sibling, "保留其他构建");
+    const runner = path.join(root, "fake-runner.cjs");
+    fs.writeFileSync(runner, `const fs = require("node:fs"); const path = require("node:path");
+      const output = process.argv.find(arg => arg.startsWith("-c.directories.output=")).split("=").slice(1).join("=");
+      fs.mkdirSync(output, { recursive: true }); fs.writeFileSync(path.join(output, "sample.exe"), "完整产物");
+      process.exitCode = ${exitCode};`);
+    const builderCliPath = require.resolve("electron-builder/cli.js");
+    const template = resolvePortableTemplatePathFromBuilderCli(builderCliPath);
+    const originalTemplate = fs.readFileSync(template, "utf8");
+    const build = selfBuild.buildSelf([], {
+      platform: "win32", projectRoot: project, builderCliPath, runnerPath: runner, cwd: project,
+      selfBuildOutputRoot: staging, buildId: "current-build", log: false,
+    });
+    if (exitCode === 0) {
+      await build;
+      assert.equal(fs.readFileSync(path.join(project, "dist", "sample.exe"), "utf8"), "完整产物");
+    } else {
+      await assert.rejects(build, /electron-builder failed with code 1/);
+      assert.equal(fs.existsSync(path.join(project, "dist")), false);
+    }
+    assert.equal(fs.existsSync(output), false);
+    assert.equal(fs.readFileSync(sibling, "utf8"), "保留其他构建");
+    assert.equal(fs.readFileSync(template, "utf8"), originalTemplate);
+  });
+}

@@ -1168,10 +1168,6 @@ function updateSettings(mutator) {
   return operation;
 }
 
-function writeSettings(settings) {
-  return updateSettings(() => settings);
-}
-
 function resolveDefaultWindowsIconPath() {
   if (cachedDefaultWindowsIconPath !== null) {
     return cachedDefaultWindowsIconPath;
@@ -1537,15 +1533,6 @@ function resolveLocalBuilderCliPath() {
   }
 
   return "";
-}
-
-async function applyPersistentPortableTemplatePatch(launcher, config, onLog = noop) {
-  if (config?.portable) {
-    const { templatePath } = validatePortableTemplate(launcher.builderCliPath);
-    launcher.persistentPortable = true;
-    onLog(`已启用构建进程内的绿色版模板: ${templatePath}\n`);
-  }
-  return async () => {};
 }
 
 function shouldPatchPersistentPortableTemplate(form, config, platform = process.platform) {
@@ -2889,11 +2876,11 @@ async function executeBuild(form, onLog, onStatus, session) {
   assertBuildNotCanceled(session);
   const launcher = await resolveBuilderLauncher(runtime, onLog);
   assertBuildNotCanceled(session);
-  const restorePortableTemplate = shouldPatchPersistentPortableTemplate(normalizedForm, config)
-    ? await applyPersistentPortableTemplatePatch(launcher, config, onLog)
-    : async () => {};
-
-  session.cleanups.push(restorePortableTemplate);
+  if (shouldPatchPersistentPortableTemplate(normalizedForm, config)) {
+    const { templatePath } = validatePortableTemplate(launcher.builderCliPath);
+    launcher.persistentPortable = true;
+    onLog(`已启用构建进程内的绿色版模板: ${templatePath}\n`);
+  }
   session.cleanups.push(() => rmWithRetry(tempConfigPath, { force: true }));
   assertBuildNotCanceled(session);
   await fs.writeFile(tempConfigPath, JSON.stringify(config, null, 2), "utf-8");
