@@ -1,355 +1,202 @@
-# html2exe 详细文档
+# 功能文档
 
-`html2exe` 是一个基于 Electron 的桌面打包工具，定位于“把已有前端项目或者纯 HTML 目录，快速、可控地封装成桌面应用”的场景。它把 `electron-builder` 的常用参数、平台目标、输出策略和工具链准备过程整合到图形界面中，减少命令行配置成本，也降低了对外部 Node 环境的依赖。
+html2exe 将打包配置和 electron-builder 的执行过程集中到图形界面。源码启动、自打包与测试命令见 [README](../README.md)，内部实现见 [开发文档](development.md)。
 
-这个项目目前更接近一个“打包工作台”而不是单纯的启动器。它关注的是打包配置整理、构建执行、日志反馈和缓存管理，而不是接管业务项目本身的编译流程。
+## 项目准备
 
-一句话概括：准备好一个 Electron 项目或静态 HTML 目录，选择目标平台和产物类型，然后让工具生成对应的桌面应用包。
+| 项目类型 | 识别方式 | 使用前准备 |
+| --- | --- | --- |
+| Electron 项目 | 所选目录存在 `package.json` | 确保 `name`、入口和页面有效，提前完成业务项目的编译 |
+| 纯 HTML 目录 | 没有 `package.json`，但能找到 `.html` 文件 | 准备 HTML、CSS、JavaScript 和静态资源，无需手写 Electron 入口 |
 
-## 适用场景
+存在 `package.json` 时始终按 Electron 项目处理，不会自动判断它是否只是一个前端工程。Vue、React 等项目应先自行生成静态产物，再选择不含 `package.json` 的产物目录。工具不会代为执行业务项目的 `npm run build`。
 
-`html2exe` 适合以下工作模式：
+Electron 项目已有 `node_modules` 时跳过依赖安装；缺少时，有 `package-lock.json` 使用 `npm ci`，否则使用 `npm install`，会在原项目中安装开发依赖和可选依赖。项目安装脚本及构建钩子会在本机执行。
 
-- 需要把 Electron 项目统一打包成安装包、便携包或压缩包。
-- 需要把静态站点、原型页面、单页 HTML 项目快速封装为桌面程序。
-- 希望把常用构建参数沉淀成预设，减少重复配置。
-- 需要在网络受限或离线环境中尽量稳定地完成构建。
+内置工具链包含 electron-builder、npm 和 rcedit，可在没有系统 Node/npm 时使用 Electron 运行 CLI。Electron 二进制、平台构建工具及项目依赖仍可能需要下载，内置工具链不代表首次构建完全离线。
 
-它不负责替代完整发布流水线，例如代码签名、公证、自动分发、制品管理，也不负责业务应用前端的构建产出。它的职责是把“可以被打包的内容”整理成可执行的 Electron 打包流程。
+## 操作流程
 
-## 核心能力
+1. 选择项目目录。通过「浏览」选择后会自动读取项目信息；手动输入路径后点击「读取项目信息」。
+2. 检查回填结果，再修改应用信息与输出目录。读取会补齐空白文本字段，并更新返回的复选框设置；切换项目时需核对已有值。
+3. 选择预设并点击「应用预设」，随后调整平台、架构、图标和资源规则。
+4. 点击「前往输出页面」，应用会先保存当前配置。
+5. 点击「开始打包」，查看步骤状态与实时日志，完成后到输出目录领取产物。
 
-- 图形化管理项目目录、输出目录、应用信息和命名模板。
-- 图形化管理压缩、架构、asar、npmRebuild 和 Electron 版本覆盖。
-- 图形化管理 Windows、Linux、macOS 的目标组合与平台特定参数。
-- 图形化管理 files、extraResources 和 asarUnpack 等资源规则。
-- 内置四种构建预设，适配正式发布、快速验证、体积优先和跨平台分发。
-- 构建过程支持实时日志、步骤状态、整体状态与取消操作。
-- 配置可持久化保存，支持 JSON 导入导出、恢复默认值，并在重启后自动恢复。
-- 纯 HTML 目录可自动补全为临时 Electron 工程。
-- Windows 绿色版 `portable` 输出为单个自解压 EXE，默认解压到 EXE 当前目录下的同名子文件夹，解压后保留该文件夹，需要手动运行文件夹内的应用。
-- 内置并缓存 electron-builder 与 npm，降低目标机器上的环境依赖。
-- 独立输出页用于集中查看打包过程和结果。
+同一时间只运行一个构建。构建期间不能返回配置页或清理缓存；「取消打包」在准备、依赖安装和打包阶段均可发起，实际退出与收尾需要等待。清空日志只清除显示内容，不会取消任务或重置当前进度。
 
-## 界面结构
+## 基础配置
 
-应用分为配置页和输出页两部分，侧边栏用于切换主要功能区。
+| 字段 | 说明 |
+| --- | --- |
+| `projectDir` | Electron 项目根目录或纯 HTML 目录 |
+| `outputDir` | 默认 `release`；相对路径基于所选项目，支持绝对路径 |
+| `appId` | 应用标识，例如 `com.example.desktop` |
+| `productName` / `executableName` | 展示名称 / 主执行文件名 |
+| `artifactName` | 产物命名模板，例如 `${productName}-${version}-${os}-${arch}.${ext}` |
+| `version` | SemVer 版本，例如 `1.0.0`、`1.0.0-beta.1` |
+| `author` / `authorEmail` | 开发者或组织名称 / 邮箱 |
+| `homepage` / `description` | 项目主页 / 应用简介 |
 
-### 配置页
+输出目录不能是源码目录本身或其祖先目录，目录链接也会按真实路径检查。可使用项目内独立的输出子目录，或源码之外的独立目录。
 
-配置页包含六个主要模块：基础配置、构建策略、平台参数、安装包设置、窗口与图标、文件与资源。
+已有 Electron 项目的 `package.json.build` 会与界面配置合并：界面生成的值优先，未覆盖的钩子、签名和其他配置保留。高级选项可继续写在目标项目的 `package.json.build` 中。
 
-- 基础配置用于填写项目路径、输出路径和应用元信息。
-- 构建策略用于控制打包行为、平台启用情况和预设方案。
-- 平台参数用于配置 Windows、Linux 和 macOS 的目标类型、分类和安装器细节。
-- 安装包设置用于补充 Windows NSIS 相关行为。
-- 窗口与图标用于定义纯 HTML 模式下的窗口外观与应用图标。
-- 文件与资源用于控制最终进入产物的资源范围。
+## 构建策略
 
-配置页还提供几个核心操作按钮：读取项目信息、保存、导入、导出、重置配置、清理构建缓存，以及跳转到输出页面。导入配置会立即应用并持久化；重置配置会在确认后删除已保存设置并恢复内置默认值。
+### 预设
 
-### 输出页
+预设只修改构建参数，不会创建跨平台编译环境；应用预设会覆盖对应字段，之后仍可手动修改。
 
-输出页专门用于展示构建过程。页面包含：
+| 预设 | 压缩 / 架构 | 默认目标 | 原生依赖重编译 |
+| --- | --- | --- | --- |
+| `release` 发布推荐 | `normal` / `x64` | Windows `nsis` | 开启 |
+| `quick` 快速验证 | `store` / `x64` | Windows `portable` | 关闭 |
+| `compact` 体积优先 | `maximum` / `x64` | Windows `nsis` | 开启 |
+| `cross` 跨平台分发 | `normal` / `x64, arm64` | Windows `nsis, zip`；Linux `AppImage, deb`；macOS `dmg, zip` | 开启 |
 
-- 进度状态区域，用于展示当前整体状态。
-- 步骤条区域，用于展示预清理、临时工程准备、依赖加载、打包、产物生成和收尾。
-- 实时日志区域，用于显示构建工具输出。
-- 打包、取消和清空日志等操作按钮。
+四种预设均启用 `asar`。前三种仅启用 Windows；可通过「仅当前系统平台」或平台复选框修改。`buildPreset` 保存所选预设，`targetWindows`、`targetLinux`、`targetMac` 分别控制平台启用，至少选择一个平台。
 
-这种页面拆分的设计目的是将“配置”和“执行”分离，降低构建过程中反复切页和查找状态的成本。
+### 压缩、归档与架构
 
-## 目录结构
+- `compression`：`store` 不压缩、`normal` 标准压缩、`maximum` 最大压缩，影响构建耗时与包体积。
+- `asar`：将应用文件归档为 `app.asar`，不是加密或源码保护措施；关闭时按普通文件打包。
+- `npmRebuild`：是否按目标 Electron 环境重编译原生依赖；纯 HTML 模式自动关闭。
+- `arches`：多个架构用逗号分隔，按所有已启用平台共同校验。Windows 支持 `x64`、`arm64`、`ia32`；Linux 支持 `x64`、`arm64`、`ia32`、`armv7l`；macOS 支持 `x64`、`arm64`、`universal`。实际可构建组合仍受 Electron 版本与目标格式限制。
+
+`universal` 只能用于仅启用 macOS 的构建。界面通过导入或读取项目配置，也能保留下拉框没有预置的目标与架构值。
+
+### 运行时版本
+
+| 字段 | 行为 |
+| --- | --- |
+| `electronVersion` | 指定实际使用的 Electron 版本；留空优先解析项目版本，纯 HTML 模式回退到工具自带版本 |
+| `chromiumVersion` | 四段版本号，通过 `CHROMIUM_VERSION` 等环境变量传入安装和构建流程 |
+| `nodeVersion` | SemVer 版本，通过 `NODE_VERSION` 等环境变量传入安装和构建流程 |
+| `clearRuntimeOverridesAfterBuild` | 一次构建尝试结束后清空上述三个字段，包括失败或取消的情况 |
+
+Chromium/Node.js 覆盖值供依赖编译和自定义脚本读取，不会替换 Electron 内置的 Chromium/Node.js。Electron 与 Node.js 字段需要完整 SemVer，不能填写 `latest` 或版本范围。
+
+版本候选从官方发布接口刷新，缓存 6 小时；网络失败时使用最近缓存或内置候选，不会覆盖已填写的版本。
+
+## 平台与安装包
+
+### Windows
+
+- `winTargets`：选择 `nsis` 安装程序、`portable` 自解压包、`zip` 压缩包或其组合。
+- `winPortable`：在所选目标之外追加 `portable`，不会重复添加。
+- `publisherName`：传入 Windows 签名发行者设置，不会自动提供签名证书。
+
+NSIS 安装设置仅影响安装包：
+
+| 字段 | 说明 |
+| --- | --- |
+| `nsisOneClick` | 单击安装；需要选择安装目录时必须关闭 |
+| `nsisPerMachine` / `nsisAllowElevation` | 为所有用户安装 / 允许请求提权 |
+| `nsisAllowChangeDir` | 允许用户选择安装目录 |
+| `nsisShortcutName` | 快捷方式名称，留空使用产品名称 |
+| `nsisCreateDesktopShortcut` | `auto` 使用构建器默认策略、`always` 创建、`never` 不创建 |
+| `nsisDeleteAppData` | 卸载时删除应用用户数据，默认关闭 |
+
+**portable 使用方式：**
+
+1. 将自解压 EXE 放到可写目录并运行。
+2. 程序在 EXE 所在目录创建子文件夹，解压后显示提示，不自动启动应用。
+3. 手动运行子文件夹内的主程序，程序文件会保留。
+
+子文件夹名称优先取 `executableName`，再取 `productName` 或 `appId`，并替换 Windows 非法文件名字符；本工具自打包固定使用 `html2exe`。再次运行自解压包会刷新该目录，请先关闭其中的应用，不要把个人文件存放在解压目录。
+
+### Linux 与 macOS
+
+| 平台 | 字段 | 常用值 |
+| --- | --- | --- |
+| Linux | `linuxTargets` | `AppImage`、`deb`、`rpm`，可组合 |
+| Linux | `linuxCategory` / `linuxMaintainer` | 应用分类 / `团队名称 <team@example.com>` |
+| macOS | `macTargets` | `dmg`、`zip` 或组合 |
+| macOS | `macCategory` | 例如 `public.app-category.utilities` |
+
+Linux 系统包应填写真实的维护者、邮箱和主页。缺少时工具会写入 `example.invalid` 占位值并记录警告，正式分发前需要替换。
+
+跨平台目标并不保证能在任意系统构建。Windows 上制作 `deb`、`rpm` 等 FPM 目标需要可用的 `fpm`，或通过 `CUSTOM_FPM_PATH` 指定；缺少时构建会提前中止。macOS 构建及签名、公证应在相应 macOS 环境完成，原生依赖也需要目标平台工具链。当前完整构建验证以 Windows 为主，其他平台和架构需要在对应环境验证。
+
+## 窗口与图标
+
+窗口选项仅对纯 HTML 模式生成的入口生效；已有 Electron 项目继续使用自身的窗口代码。
+
+| 字段 | 说明 |
+| --- | --- |
+| `windowTitle` | 初始窗口标题 |
+| `windowWidth` / `windowHeight` | 初始像素尺寸，默认 `1280 × 800`，有效范围 `1–32767` |
+| `windowShowMenuBar` / `windowFrame` | 显示原生菜单 / 系统边框 |
+| `windowResizable` / `windowFullscreenable` | 允许调整尺寸 / 全屏 |
+| `windowAlwaysOnTop` | 始终置顶 |
+| `winIcon` / `linuxIcon` / `macIcon` | Windows `.ico` 或可转换的 `.png` / Linux `.png` / macOS `.icns` |
+
+图标相对路径基于原项目目录，只处理已选平台的图标。图标留空时使用可用的默认资源。
+
+## 文件与资源
+
+三个输入框均每行一条规则：字符串直接填写，对象使用单行 JSON；不要粘贴整个数组。已有 Electron 项目的路径遵循其构建配置，纯 HTML 模式的输入路径以原始 HTML 目录为基准。
+
+`filesGlobs` 对应 `build.files`，控制应用文件，示例：
 
 ```text
-.
-├── main.js                 # Electron 主进程入口
-├── preload.js              # 渲染进程受控 API 暴露
-├── scripts/                # 自打包、工具链准备和 afterPack 脚本
-├── src/                    # 界面页面、样式、渲染层逻辑和静态资源
-├── test/                   # node:test 回归测试
-├── vendor/                 # prebuild 生成的内置工具链，不提交
-├── dist/                   # electron-builder 产物，不提交
-└── .cache/                 # 开发期缓存，不提交
+**/*
+!secrets.txt
+!**/*.map
 ```
 
-`main.js` 和 `preload.js` 仍保留在根目录，是为了保持 Electron 入口、打包后的资源定位以及现有 `__dirname` 路径逻辑稳定。构建辅助脚本统一放在 `scripts/`，减少根目录噪音。
+纯 HTML 模式会补齐入口与 `app-source/**`，保留排除规则；若只需要静态目录的一部分，请明确添加排除项。
 
-## 快速开始
+`extraResources` 对应 `build.extraResources`，复制到应用资源目录，放在 asar 归档之外。重命名资源目录示例：
 
-### 本地运行
-
-```bash
-npm install
-npm run start
+```json
+{"from":"assets","to":"media","filter":["**/*","!**/*.psd"]}
 ```
 
-`npm run dev` 与 `npm run start` 是等价的，都会直接启动 Electron 应用。
+已有 Electron 应用可通过 `process.resourcesPath` 定位这些文件；纯 HTML 页面没有直接访问 Node.js API 的权限，应将页面依赖的资源保留在页面可访问的相对路径中。
 
-### 测试
+`asarUnpack` 对应 `build.asarUnpack`，在启用 asar 时将匹配文件放在 `app.asar.unpacked`，例如：
 
-```bash
-npm test
+```text
+**/*.node
 ```
 
-测试使用 Node.js 内置的 `node:test`，覆盖主进程配置生成、绿色版模板 patch、渲染层日志与按钮状态等回归场景。
-
-### 构建当前工具 （自打包）
-
-```bash
-npm run build
-```
-
-构建命令会先执行 `prebuild`，由 `scripts/pack-toolchain.js` 生成或刷新 `vendor/toolchain`，再通过 `scripts/build-self.js` 调用 `electron-builder`。在 Windows 上默认产出 `portable` 绿色自解压 EXE，双击后解压到 EXE 当前目录下的 `html2exe` 子文件夹，解压后保留该文件夹，需要手动运行文件夹内的应用。
-
-自打包时会先把 electron-builder 的临时输出目录切到系统临时目录下的 `html2exe-self-build/<本次构建>`，构建成功后再把顶层产物及更新辅助文件发布到 `dist`。目录模式、显式输出目录和混合平台构建保留 electron-builder 原生输出方式；发布失败时保留临时产物，日志会给出恢复位置。这样可以避开编辑器、资源管理器或工作区索引器对项目目录内大量解压文件的持续扫描。`scripts/electron-builder-runner.js` 还会在 electron-builder 进程内为 Windows 下容易被安全软件或索引器短暂占用的 `rename` 操作增加重试，降低 `win-unpacked.tmp` 重命名失败的概率。
-
-## 典型使用流程
-
-1. 打开应用，在基础配置中选择项目目录和输出目录。
-2. 填写或调整应用 ID、产品名称、版本号、作者和产物命名模板。
-3. 选择一个构建预设，或者手动调整压缩、架构、asar 和目标平台。
-4. 如有需要，补充平台参数、安装包参数、窗口参数和资源规则。
-5. 点击读取项目信息，让程序根据目标目录自动回填默认值。
-6. 切到输出页，点击开始打包，并在日志和步骤状态中观察执行过程。
-7. 如果构建被中止或需要重新开始，可以使用取消操作或清空日志。
-
-## 配置项说明
-
-### 基础配置
-
-- `projectDir`：目标项目目录，既支持标准 Electron 项目，也支持纯 HTML 目录。
-- `outputDir`：产物输出目录，默认值是 `release`。
-- `appId`：应用标识，用于安装包和系统识别。
-- `productName`：产品名称，通常会用于安装器和产物展示。
-- `executableName`：主执行文件名。
-- `artifactName`：产物命名模板。
-- `version`：应用版本号。
-- `author`：作者或组织名称。
-- `description`：应用简介。
-
-项目目录是整个流程的入口。程序会先判断目录中是否存在标准 Electron 配置，再决定是否进入纯 HTML 自动补全模式。
-
-### 构建策略
-
-- `compression`：控制打包压缩级别，支持 `store`、`normal`、`maximum`。
-- `arches`：控制目标架构，支持 `x64`、`arm64`、`ia32`、`armv7l`、`universal`，并允许组合写法。
-- `asar`：是否启用 asar 封装。
-- `npmRebuild`：是否在打包前重编译原生依赖。
-- `targetWindows` / `targetLinux` / `targetMac`：是否启用对应平台构建。
-- `buildPreset`：构建预设。
-
-当前提供的预设如下：
-
-- `release`：默认推荐方案，平衡速度、兼容性和产物质量。
-- `quick`：快速验证方案，优先缩短构建时间。
-- `compact`：体积优先方案，优先压缩产物体积。
-- `cross`：跨平台分发方案，一次生成多个平台目标。
-
-### 运行时高级控制
-
-- `electronVersion`：指定构建所使用的 Electron 版本。
-- `chromiumVersion`：通过环境变量注入 Chromium 版本覆盖值。
-- `nodeVersion`：通过环境变量注入 Node.js 版本覆盖值。
-- `clearRuntimeOverridesAfterBuild`：构建结束后自动清空上述高级版本字段。
-
-这里的 Chromium 和 Node.js 版本覆盖，主要用于原生依赖编译或外部脚本读取，不会直接替换 Electron 自带运行时。它们更适合用于构建上下文标记，而不是运行时强制升级。
-
-运行时版本候选会在应用启动后从 Electron 与 Node.js 官方发布接口自动刷新，刷新成功后缓存 6 小时。网络不可用或接口异常时会优先使用最近缓存；没有缓存时继续使用随应用发布的内置候选，且不会覆盖表单中已经填写的版本。
-
-### Windows 参数
-
-- `winTargets`：Windows 构建目标，例如 `nsis`、`portable`、`zip`。
-- `winPortable`：在 `winTargets` 之外额外追加 `portable` 绿色版目标。
-- `publisherName`：发布者信息。
-- `nsisOneClick`：是否启用单击安装。
-- `nsisPerMachine`：是否按机器范围安装。
-- `nsisAllowElevation`：是否允许提权。
-- `nsisAllowChangeDir`：是否允许修改安装目录。
-- `nsisShortcutName`：快捷方式名称。
-- `nsisCreateDesktopShortcut`：桌面快捷方式策略，支持 `auto`、`always`、`never`。
-- `nsisDeleteAppData`：卸载时是否删除应用数据。
-
-这部分参数主要用于控制 Windows 安装体验。对于需要标准安装器、绿色单文件版或压缩包分发的项目，这些选项很关键。
-
-#### Windows 绿色版 portable 行为
-
-选择 `portable` 目标或启用 `winPortable` 后，工具会按以下策略生成绿色版：
-
-- 产物仍然是一个自解压 EXE。
-- 双击运行时，默认在该 EXE 所在目录创建同名子文件夹。
-- 应用内容解压到该子文件夹中，而不是系统临时目录。
-- 解压完成后显示提示，不自动启动应用；请手动运行解压目录内的主程序。
-- 后续再次运行自解压 EXE 会重新解压并刷新该目录。请先关闭其中正在运行的应用，不要把个人文件保存在解压目录中。
-- 子文件夹名称来源于 `executableName`，为空时回退到 `productName` 或 `appId`，并会自动替换 Windows 文件名中的非法字符。
-
-这样处理更符合“绿色软件”的直觉：用户可以把 EXE 放到任意目录运行，解压后的程序文件也留在同一位置，便于检查、备份或手动删除。
-
-### Linux 参数
-
-- `linuxTargets`：Linux 构建目标，例如 `AppImage`、`deb`、`rpm`。
-- `linuxCategory`：应用分类，例如 `Utility`、`Development`、`Office`。
-
-Linux 目标适合面向发行版、内部测试包或统一可执行包分发的场景。
-
-### macOS 参数
-
-- `macTargets`：macOS 构建目标，例如 `dmg`、`zip`。
-- `macCategory`：应用分类。
-
-macOS 目标更偏向镜像式发布和归档分发。
-
-### 窗口与图标
-
-- `winIcon`：Windows 图标路径。
-- `linuxIcon`：Linux 图标路径。
-- `macIcon`：macOS 图标路径。
-
-在纯 HTML 自动补全模式下，这组参数会直接影响生成的窗口配置；如果原本就是 Electron 项目，则应以项目自身的主进程窗口逻辑为准。
-
-### 文件与资源规则
-
-- `filesGlobs` 对应 `build.files`。
-- `extraResources` 对应 `build.extraResources`。
-- `asarUnpack` 对应 `build.asarUnpack`。
-
-如果某项在 `package.json` 中是对象形式，例如 `extraResources` 常见的 `{ "from": "...", "to": "..." }`，界面按“每行一条 JSON”输入。字符串规则则按行填写即可。
-
-## 纯 HTML 自动补全模式
-
-当目标目录中没有 `package.json`，但存在 HTML 文件时，程序会自动启用纯 HTML 模式。
-
-处理过程大致如下：
-
-- 优先寻找 `index.html`，其次递归搜索其他 HTML 文件。
-- 自动忽略 `node_modules`、`.git`、`release`、`dist` 等目录。
-- 将原目录复制到临时工程中。
-- 自动生成最小可用的 `main.js` 和 `package.json`。
-- 自动补齐关键 `files` 规则，确保内容可以被打入产物。
-- 如果输出目录是相对路径，会自动转换成基于源项目的绝对路径，避免临时目录清理后找不到结果。
-
-这意味着一个纯静态目录可以直接交给工具，而不必先手工改造成完整 Electron 项目。
-
-## 工具链与缓存
-
-### 设计目标
-
-项目将构建工具链拆成独立缓存，目标是让已打包的程序在目标机器上尽量少依赖外部环境。
-
-### 打包阶段
-
-`scripts/pack-toolchain.js` 会在 `vendor/toolchain` 中准备构建依赖，当前包括：
-
-- `electron-builder@26.15.3`
-- `npm@11.21.1`
-- `rcedit@4.0.1`
-
-工具链清单和锁文件位于 `scripts/toolchain/`；首次准备或锁文件变化时执行 `npm ci`，完整且匹配的工具链会直接复用。`extraResources` 负责复制到应用资源目录，`scripts/afterPack.js` 验证必需文件，避免重复复制。
-
-### 运行阶段的查找顺序
-
-主进程会按优先级寻找可用的 `electron-builder` 入口：
-
-1. 内置或本地可直接访问的 `electron-builder` CLI。
-2. 本地缓存的完整工具链。
-3. 通过内置或系统 npm-cli 安装固定版本到缓存，再使用缓存 CLI。
-
-所有 CLI 都直接通过 Node/Electron 运行，不经过 shell；Windows 无需把 `npm.cmd` 当成原生可执行文件启动。
-
-如果系统没有可用的 `Node.js` 或 `npm`，程序会尽量回退到 Electron 自带运行时，并通过 `ELECTRON_RUN_AS_NODE=1` 执行 CLI。
-
-### 这样设计的价值
-
-- 降低对系统级 Node 环境的依赖。
-- 提升离线或受限网络环境中的首次构建成功率。
-- 让打包后的工具在另一台机器上更容易直接使用。
-
-### 缓存位置
-
-- 开发模式：仓库根目录下的 `.cache`
-- 打包后运行：`appData` 对应的应用目录下的 `.cache`
-
-Windows 示例：`C:/Users/<用户名>/AppData/Roaming/html2exe/.cache`
-
-### 缓存内容
-
-- `.cache/electron/user-data`
-- `.cache/electron/cache`
-- `.cache/electron/temp`
-- `.cache/electron/logs`
-- `.cache/builder/temp`
-- `.cache/builder/cache`
-- `.cache/builder/electron-download`
-- `.cache/builder/npm-cache`
-- `.cache/builder/toolchain`
-
-### 配置持久化
-
-- 配置文件名：`builder-settings.json`
-- 存储位置：Electron 的 `userData` 目录
-- 清理缓存不会删除已保存配置，因为不会清理 `user-data`
-
-### 清理策略
-
-- 启动时仅扫描本应用 `builder/temp` 内的历史临时目录，例如 `electron-html-pack-*`、`electron-builder-ui-*`，不扫描系统临时目录
-- Windows 下遇到 `EBUSY` 或 `EPERM` 时会尝试重试
-- 如果仍被占用，程序会返回“部分清理”，并列出被跳过的项；不会为了清理缓存而终止其它程序
-
-## 构建执行链路
-
-1. 渲染进程收集表单数据，并通过 preload 暴露的 IPC 接口发送给主进程。
-2. 主进程校验参数、做归一化处理，并判断当前项目是 Electron 项目还是纯 HTML 项目。
-3. 纯 HTML 项目会先进入自动补全流程，生成临时工程结构。
-4. 主进程生成临时 electron-builder 配置。
-5. 系统解析可用的构建入口，优先使用内置和缓存工具链。
-6. 如果包含 Windows `portable` 目标，构建前校验模板兼容性，在构建子进程读取模板时替换内容，让自解压 EXE 在当前目录解压并保留文件。
-7. 启动子进程执行构建，并把日志流式回传到界面。
-8. 构建完成后返回成功、失败或取消状态，并统一清理临时配置与工程；共享的 portable 模板文件从始至终不会被改写。
-
-`npm run build` 自打包也会使用同一类 portable 模板 patch，只是入口在 `scripts/build-self.js`。这保证命令行默认构建和应用内构建的绿色版行为一致。
+### 纯 HTML 模式的处理规则
+
+- 按目录层级查找入口，同层优先 `index.html`，其次其他 `.html` 文件。
+- 将源文件复制到临时工程，生成独立 Electron 入口，不修改原始 HTML。
+- 默认忽略 `node_modules`、`.git`、`.cache`、`release`、`dist`、`out`、`win-unpacked`、`app.asar.unpacked` 及当前输出目录。这些名称针对所选目录内部判断；可以直接选择前端生成的 `dist` 作为项目目录。
+- 页面通过 `file://` 加载，应使用适合本地文件加载的资源路径和路由。依赖开发服务器或根路径 `/assets/...` 的页面需要先调整。
+- 生成窗口启用 `sandbox`、`contextIsolation`，禁用 `nodeIntegration`。需要 Node.js API、preload 或自定义协议时，应提供完整 Electron 项目。
+- 成功、失败与取消后统一清理临时工程；正式产物保留在设置的输出目录。
+
+## 配置保存与缓存
+
+「保存配置」会持久化表单；启动时恢复已保存值。「导出配置」生成 JSON 备份；「导入配置」立即应用并保存，支持导出的格式和普通配置对象，最大 1 MB。布尔字段必须使用 JSON 的 `true` / `false`。迁移到另一台电脑后需重新核对项目、输出和图标路径。
+
+「重置配置」确认后删除已保存设置，恢复默认值，不删除源码或构建产物。
+
+| 数据 | 位置 |
+| --- | --- |
+| 开发模式缓存根目录 | 仓库下 `.cache/` |
+| 打包后缓存根目录 | Electron `appData/<应用名>/.cache/`；Windows 通常为 `%APPDATA%/html2exe/.cache/` |
+| 配置文件 | 缓存根目录下 `electron/user-data/builder-settings.json` |
+| 界面缓存 / 临时文件 / 日志 | `electron/cache/`、`electron/temp/`、`electron/logs/` |
+| 构建临时文件 / 工具缓存 / Electron 下载 | `builder/temp/`、`builder/cache/`、`builder/electron-download/` |
+| npm 缓存 / 后备构建器 | `builder/npm-cache/`、`builder/toolchain/` |
+
+「清理构建缓存」清理界面及构建缓存、临时文件和日志，保留 `electron/user-data` 与 `builder/toolchain`，也不会删除 `vendor/toolchain` 或正式产物。文件被占用时重试，无法删除则报告「部分清理」；不会结束其他程序。启动时只在本应用的构建临时目录中回收历史文件。
 
 ## 常见问题
 
-### 缓存读不到或工具链丢失
-
-可以先执行：
-
-```bash
-npm run prebuild
-```
-
-这会重建 `vendor/toolchain`。如果已经发布过 EXE，则需要重新打包并分发新版。
-
-### 清理缓存提示“部分清理，文件被占用”
-
-通常是系统进程、资源管理器预览窗格、杀毒软件或其他占用目标目录的程序导致。关闭相关进程后重试即可。
-
-### Windows 绿色版没有生成当前目录解压行为
-
-请确认 Windows 目标中包含 `portable`，或者启用了 `winPortable`。该能力依赖本地或缓存工具链中的 `electron-builder` CLI，并需要能定位到 `app-builder-lib/templates/nsis/portable.nsi`。如果本地与缓存工具链均无法定位模板，程序会中止构建并给出错误。
-
-## 开发与维护
-
-项目的职责分层比较清晰：主进程负责工具链解析、构建编排、缓存策略和 IPC；预加载脚本负责暴露受控接口；渲染层负责表单、状态和日志展示。新增配置字段时，建议保持渲染层和主进程字段名一致，这样更容易维持参数的单向映射关系。
-
-如果需要扩展构建链路，优先验证本地运行，再验证 `npm run build`。涉及清理逻辑时，要确保不会误删配置或用户数据；涉及 IPC 时，尽量继续走 preload 白名单，而不是扩大页面权限。
-
-## 安全说明
-
-- 本工具只负责本机参数组装和命令调度，不托管签名证书。
-- 打包命令会在本机执行，请确认目标项目和依赖来源可信。
-- 正式分发前，请补齐签名、公证、许可证和合规流程。
-
-## 配置和构建边界
-
-- 渲染层与主进程共用 `src/config.js` 校验。Chromium 使用四段版本号；应用版本、Electron 和 Node.js 使用 SemVer。
-- 配置通过队列串行写入，并先写临时文件再原子替换；导入保留下拉框未预置的配置值。
-- 构建从准备阶段起占用任务锁；准备、依赖安装和打包阶段均可取消。取消只终止本次任务拥有的子进程树。
-- 输出目录不能是源码目录本身或其祖先；目录链接也会按真实路径核对。
-- 纯 HTML 模式下，文件与附加资源的相对路径以原始项目为基准；保留用户排除规则，默认忽略 `.cache` 等生成目录。
-- `asar` 选项按用户设置生效；现有 Electron 项目未被界面覆盖的 `package.json.build` 钩子和配置会继续保留。
-- 本工具只允许受信任的本地配置页和输出页调用 IPC，并阻止外部页面导航和新窗口。
-
-## 许可证
-
-MIT
+| 现象 | 处理方式 |
+| --- | --- |
+| 前端项目没有生成可运行应用 | 先自行编译，再选择静态产物目录；有 `package.json` 会按 Electron 项目处理 |
+| 打包后页面空白或资源丢失 | 核对入口、`file://` 下的相对路径与资源排除规则；依赖服务端的功能需要单独提供服务 |
+| Electron 项目依赖不完整 | 工具只检查 `node_modules` 是否存在；在目标项目中手动按锁文件重新安装依赖 |
+| 下载失败或缓存损坏 | 检查网络、代理和日志中的下载地址，必要时清理构建缓存后重试；镜像配置见开发文档 |
+| 工具链缺失 / portable 模板不兼容 | 源码环境执行 `npm run prebuild`；检查工具链锁文件与版本，发布版需要重新打包分发 |
+| 清理提示文件被占用 | 关闭相关应用、资源管理器预览等占用后重试，依据日志中的跳过路径定位 |
+| 无法选择 NSIS 安装目录 | 关闭单击安装，再启用允许选择安装目录 |
+| portable 解压后没有自动打开 | 按提示手动运行解压目录内的主程序 |
