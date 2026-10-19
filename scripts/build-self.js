@@ -3,89 +3,10 @@ const fs = require("node:fs/promises");
 const fssync = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { createPersistentPortableNsiScript, resolvePortableTemplatePathFromBuilderCli, validatePortableTemplate } = require("./portable-template");
 
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function createPersistentPortableNsiScript(script) {
-  const source = String(script || "");
-  const flexibleNewline = "\\r?\\n\\s*";
-  const tempDirBlockPattern = new RegExp(
-    [
-      ' StrCpy \\$INSTDIR "\\$PLUGINSDIR\\\\app"',
-      "!ifdef UNPACK_DIR_NAME",
-      'StrCpy \\$INSTDIR "\\$TEMP\\\\\\$\\{UNPACK_DIR_NAME\\}"',
-      "!endif",
-    ].join(flexibleNewline)
-  );
-  const persistentDirBlock = [
-    ' StrCpy $INSTDIR "$PLUGINSDIR\\app"',
-    " !ifdef UNPACK_DIR_NAME",
-    ' StrCpy $INSTDIR "$EXEDIR\\${UNPACK_DIR_NAME}"',
-    " !endif",
-  ].join("\n");
-
-  if (!tempDirBlockPattern.test(source)) {
-    throw new Error("当前 electron-builder portable.nsi 模板结构不匹配，无法启用当前目录持久化绿色版。");
-  }
-
-  const withVisibleProgress = source
-    .replace(
-      /(AutoCloseWindow\s+True[^\S\r\n]*(?:\r?\n))/,
-      'LoadLanguageFile "${NSISDIR}\\Contrib\\Language files\\English.nlf"\n$1'
-    )
-    .replace(
-      /(AutoCloseWindow\s+True[^\S\r\n]*(?:\r?\n))/,
-      "$1ShowInstDetails show\n"
-    )
-    .replace(
-      /(RequestExecutionLevel\s+\$\{REQUEST_EXECUTION_LEVEL\}[^\S\r\n]*(?:\r?\n))/,
-      "$1Page instfiles\n"
-    )
-    .replace(
-      /([ \t]*)!ifndef SPLASH_IMAGE[^\S\r\n]*(?:\r?\n)[ \t]*SetSilent silent[^\S\r\n]*(?:\r?\n)[ \t]*!endif/,
-      "$1; Self-extract mode shows the extraction progress window."
-    );
-  const withPersistentDir = withVisibleProgress.replace(tempDirBlockPattern, persistentDirBlock);
-  const launchAppPattern =
-    /^([ \t]*)ExecWait\s+"\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}[^"]*"\s+\$0[^\S\r\n]*(?:\r?\n[ \t]*SetErrorLevel\s+\$0[^\S\r\n]*)?/m;
-  const withoutLaunch = withPersistentDir.replace(
-    launchAppPattern,
-    "$1; Self-extract mode does not launch the app after extraction."
-  );
-  const exitCleanupPattern = /([ \t]*SetOutPath \$EXEDIR[^\S\r\n]*(?:\r?\n)(?:[ \t]*(?:\r?\n))*)([ \t]*)RMDir \/r \$INSTDIR(?=\r?\n|$)/;
-  if (!exitCleanupPattern.test(withoutLaunch)) {
-    throw new Error("当前 electron-builder portable.nsi 未找到退出清理语句，无法安全 patch。");
-  }
-
-  return withoutLaunch.replace(
-    exitCleanupPattern,
-    "$1$2System::Call 'shell32.dll::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'\n$2RMDir /r \"$$PLUGINSDIR\"\n$2MessageBox MB_OK \"Extraction complete.\"\n$2; persistent portable mode keeps unpacked files beside the executable."
-  );
-}
-
-function resolveBuilderPackageRootFromCli(cliPath) {
-  let current = path.dirname(cliPath);
-  for (let depth = 0; depth < 6; depth += 1) {
-    const pkgPath = path.join(current, "package.json");
-    if (fssync.existsSync(pkgPath)) {
-      try {
-        const pkg = JSON.parse(fssync.readFileSync(pkgPath, "utf-8"));
-        if (pkg && pkg.name === "electron-builder") {
-          return current;
-        }
-      } catch (error) {}
-    }
-
-    const parent = path.dirname(current);
-    if (parent === current) {
-      break;
-    }
-    current = parent;
-  }
-
-  return "";
-}
 
 function resolveLocalBuilderCliPath() {
   return require.resolve("electron-builder/cli.js", { paths: [PROJECT_ROOT] });
@@ -93,21 +14,6 @@ function resolveLocalBuilderCliPath() {
 
 function resolveElectronBuilderRunnerPath() {
   return path.join(__dirname, "electron-builder-runner.js");
-}
-
-function resolvePortableTemplatePathFromBuilderCli(builderCliPath) {
-  const builderPackageRoot = resolveBuilderPackageRootFromCli(builderCliPath);
-  if (!builderPackageRoot) {
-    return "";
-  }
-
-  const nodeModulesRoot = path.dirname(builderPackageRoot);
-  const candidates = [
-    path.join(nodeModulesRoot, "app-builder-lib", "templates", "nsis", "portable.nsi"),
-    path.join(builderPackageRoot, "node_modules", "app-builder-lib", "templates", "nsis", "portable.nsi"),
-  ];
-
-  return candidates.find((candidate) => fssync.existsSync(candidate)) || "";
 }
 
 function shouldPatchPortableTemplate(argv = [], platform = process.platform) {
@@ -147,6 +53,8 @@ function hasOutputOverride(argv = []) {
   return argv.some((arg) => {
     const value = String(arg || "").toLowerCase();
     return (
+      ["--config", "-c", "--config.directories.output", "-c.directories.output"].includes(value) ||
+      value.startsWith("--config=") || value.startsWith("-c=") ||
       value.startsWith("-c.directories.output=") ||
       value.startsWith("--config.directories.output=")
     );
@@ -162,7 +70,9 @@ function createBuildInvocation(argv = [], options = {}) {
   const platform = options.platform || process.platform;
   const buildId = options.buildId || `build-${Date.now()}-${process.pid}`;
   const finalOutputDir = path.join(projectRoot, "dist");
-  const isolated = shouldPatchPortableTemplate(argv, platform) && !hasOutputOverride(argv);
+  const hasOtherPlatform = argv.some((arg) => /^--(?:linux|mac|macos)(?:=|$)/i.test(arg));
+  const directoryOnly = argv.some((arg) => arg === "--dir" || arg === "dir");
+  const isolated = shouldPatchPortableTemplate(argv, platform) && !hasOutputOverride(argv) && !hasOtherPlatform && !directoryOnly;
 
   if (!isolated) {
     return {
@@ -190,7 +100,7 @@ function isPathInsideAllowedRoot(targetPath, rootPath) {
   const resolvedRoot = path.resolve(rootPath);
   const resolvedTarget = path.resolve(targetPath);
   const relative = path.relative(resolvedRoot, resolvedTarget);
-  return Boolean(relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+  return Boolean(relative && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 function assertInsideAllowedRoots(targetPath, roots) {
@@ -200,11 +110,25 @@ function assertInsideAllowedRoots(targetPath, roots) {
   }
 }
 
+async function resolvePhysicalPath(targetPath) {
+  try { return await fs.realpath(targetPath); }
+  catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    const parent = path.dirname(targetPath);
+    if (parent === targetPath) throw error;
+    return path.join(await resolvePhysicalPath(parent), path.basename(targetPath));
+  }
+}
+
 async function removePathWithRetry(targetPath, options = {}) {
-  assertInsideAllowedRoots(targetPath, [
+  const roots = [
     options.projectRoot || PROJECT_ROOT,
     ...(options.allowedRoots || []),
-  ]);
+  ];
+  assertInsideAllowedRoots(targetPath, roots);
+  const physicalTarget = await resolvePhysicalPath(path.resolve(targetPath));
+  const physicalRoots = await Promise.all(roots.map((root) => resolvePhysicalPath(path.resolve(root))));
+  assertInsideAllowedRoots(physicalTarget, physicalRoots);
 
   const attempts = options.attempts || 6;
   const retryDelayMs = options.retryDelayMs || 500;
@@ -243,18 +167,24 @@ async function publishTopLevelExecutables(outputDir, finalOutputDir, options = {
   await fs.mkdir(finalOutputDir, { recursive: true });
   const entries = await fs.readdir(outputDir, { withFileTypes: true });
   const executables = entries.filter(
-    (entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".exe")
+    (entry) => entry.isFile() && !/^builder-(?:debug|effective-config)\./i.test(entry.name)
   );
 
   if (executables.length === 0) {
-    throw new Error(`构建已完成，但未在临时输出目录找到可发布的 EXE: ${outputDir}`);
+    throw new Error(`构建已完成，但未在临时输出目录找到可发布的产物: ${outputDir}`);
   }
 
   for (const entry of executables) {
     const from = path.join(outputDir, entry.name);
     const to = path.join(finalOutputDir, entry.name);
     try {
-      await fs.copyFile(from, to);
+      const stagedPath = `${to}.html2exe-${process.pid}.tmp`;
+      try {
+        await fs.copyFile(from, stagedPath);
+        await fs.rename(stagedPath, to);
+      } finally {
+        await fs.rm(stagedPath, { force: true }).catch(() => {});
+      }
     } catch (error) {
       if (["EPERM", "EBUSY"].includes(error && error.code)) {
         throw new Error(
@@ -272,27 +202,8 @@ async function publishTopLevelExecutables(outputDir, finalOutputDir, options = {
 }
 
 async function applyPersistentPortableTemplatePatch(builderCliPath) {
-  const templatePath = resolvePortableTemplatePathFromBuilderCli(builderCliPath);
-  if (!templatePath) {
-    throw new Error("无法定位 electron-builder portable.nsi 模板，不能生成当前目录持久化绿色版。");
-  }
-
-  const originalScript = await fs.readFile(templatePath, "utf-8");
-  const patchedScript = createPersistentPortableNsiScript(originalScript);
-  if (patchedScript === originalScript) {
-    return async () => {};
-  }
-
-  await fs.writeFile(templatePath, patchedScript, "utf-8");
-
-  let restored = false;
-  return async () => {
-    if (restored) {
-      return;
-    }
-    restored = true;
-    await fs.writeFile(templatePath, originalScript, "utf-8");
-  };
+  validatePortableTemplate(builderCliPath);
+  return async () => {};
 }
 
 function createElectronBuilderCommand(builderCliPath, argv, options = {}) {
@@ -300,7 +211,7 @@ function createElectronBuilderCommand(builderCliPath, argv, options = {}) {
     args: [options.runnerPath || resolveElectronBuilderRunnerPath(), builderCliPath, ...argv],
     command: process.execPath,
     cwd: options.cwd || PROJECT_ROOT,
-    env: process.env,
+    env: { ...process.env, HTML2EXE_PERSISTENT_PORTABLE: shouldPatchPortableTemplate(argv, options.platform) ? "1" : "0" },
   };
 }
 
@@ -332,22 +243,27 @@ async function buildSelf(argv = process.argv.slice(2), options = {}) {
     ? await applyPersistentPortableTemplatePatch(builderCliPath)
     : async () => {};
 
+  let keepOutput = false;
   try {
     await runElectronBuilder(builderCliPath, invocation.argv, options);
     if (invocation.isolated) {
+      keepOutput = true;
       await publishTopLevelExecutables(invocation.outputDir, invocation.finalOutputDir, options);
+      keepOutput = false;
     }
   } finally {
     try {
       await restorePortableTemplate();
     } finally {
-      if (invocation.isolated) {
+      if (invocation.isolated && !keepOutput) {
         await removePathWithRetry(invocation.outputDir, {
           projectRoot: options.projectRoot || PROJECT_ROOT,
           allowedRoots: invocation.cleanupRoots,
           attempts: options.attempts,
           retryDelayMs: options.retryDelayMs,
         });
+      } else if (keepOutput) {
+        console.error(`发布失败，构建产物已保留在: ${invocation.outputDir}`);
       }
     }
   }

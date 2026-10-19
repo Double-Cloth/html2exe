@@ -109,7 +109,7 @@
                 </select>
               </div>
               <div class="field-row checkbox-row">
-                <label for="asar">启用 Asar 文件保护</label>
+                <label for="asar">启用 Asar 归档</label>
                 <input id="asar" type="checkbox" checked />
               </div>
               <div class="field-row checkbox-row">
@@ -121,7 +121,7 @@
             <div class="grid three-col">
               <div class="field-row">
                 <label for="electronVersion">Electron 版本</label>
-                <input id="electronVersion" type="text" list="electronVersionOptions" placeholder="选择或输入，如 44.3.0；留空使用本地默认" />
+                <input id="electronVersion" type="text" list="electronVersionOptions" placeholder="选择或输入，如 44.3.0；留空优先使用项目版本" />
                 <datalist id="electronVersionOptions">
                   <option value="44.3.0" label="最新稳定版"></option>
                   <option value="43.6.0" label="上一稳定主版本"></option>

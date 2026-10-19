@@ -1,41 +1,12 @@
 const fs = require("node:fs");
 const path = require("node:path");
-
-function copyToolchain(sourceRoot, destinationRoot) {
-  if (!fs.existsSync(sourceRoot)) {
-    return false;
-  }
-
-  fs.mkdirSync(path.dirname(destinationRoot), { recursive: true });
-  fs.rmSync(destinationRoot, { recursive: true, force: true });
-  fs.cpSync(sourceRoot, destinationRoot, { recursive: true, force: true });
-  return true;
-}
+const { REQUIRED_TOOLCHAIN_FILES } = require("./pack-toolchain");
 
 exports.default = async function afterPack(context) {
-  const projectDir = context.packager.projectDir;
-  const appOutDir = context.appOutDir;
-  const resourcesDir = path.join(appOutDir, "resources");
-  const destinationRoots = [
-    path.join(resourcesDir, "embedded", "toolchain", "node_modules"),
-    path.join(resourcesDir, "app", "embedded", "toolchain", "node_modules"),
-  ];
-
-  const bundledToolchain = path.join(projectDir, "vendor", "toolchain", "node_modules");
-
-  let copied = false;
-  for (const destinationRoot of destinationRoots) {
-    if (copyToolchain(bundledToolchain, destinationRoot)) {
-      console.log(`[afterPack] bundled toolchain copied to ${destinationRoot}`);
-      copied = true;
-    }
-  }
-
-  if (copied) {
-    return;
-  }
-
-  throw new Error(
-    "无法找到可打包的 toolchain：vendor/toolchain/node_modules 不存在，且 project/node_modules 中也没有 electron-builder/npm。请先执行 prebuild 并确保依赖安装完成。"
-  );
+  // extraResources 已在 afterPack 前复制完成；只校验，避免把工具链重复打包三份。
+  const resourcesDir = context.packager.getResourcesDir(context.appOutDir);
+  const toolchainRoot = path.join(resourcesDir, "embedded", "toolchain", "node_modules");
+  const missing = REQUIRED_TOOLCHAIN_FILES.filter((file) => !fs.existsSync(path.join(toolchainRoot, file)));
+  if (missing.length) throw new Error(`内置工具链不完整，请先执行 npm run prebuild。缺少: ${missing.join(", ")}`);
+  console.log(`[afterPack] 内置工具链校验通过: ${toolchainRoot}`);
 };

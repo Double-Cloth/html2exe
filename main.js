@@ -17,16 +17,17 @@ const { app, BrowserWindow, dialog, ipcMain, nativeImage } = require("electron")
 const fs = require("node:fs/promises");
 const fssync = require("node:fs");
 const path = require("node:path");
-const os = require("node:os");
 const { pathToFileURL } = require("node:url");
 const { spawn, spawnSync } = require("node:child_process");
 const { normalizeSettingsRecord, validateBuildForm } = require("./src/config");
+const { resolveNpmCli } = require("./scripts/npm-cli");
+const { validatePortableTemplate } = require("./scripts/portable-template");
 
 const SETTINGS_FILE_NAME = "builder-settings.json";
 const SETTINGS_EXPORT_FORMAT = "html2exe.settings";
 const SETTINGS_EXPORT_VERSION = 1;
 const SETTINGS_IMPORT_MAX_BYTES = 1024 * 1024;
-const ELECTRON_BUILDER_VERSION = "26.8.1";
+const ELECTRON_BUILDER_VERSION = require("./scripts/pack-toolchain").TOOLCHAIN_DEPENDENCIES["electron-builder"];
 const ELECTRON_BUILDER_BINARIES_MIRROR_DEFAULT = "https://npmmirror.com/mirrors/electron-builder-binaries/";
 const FPM_LINUX_TARGETS = new Set(["deb", "rpm", "sh", "freebsd", "pacman", "p5p", "apk"]);
 const LOCAL_CACHE_ROOT = app.isPackaged
@@ -430,65 +431,10 @@ function resolveBundledRceditBinaryPath() {
   return "";
 }
 
-function resolveBuilderPackageRootFromCli(cliPath) {
-  let current = path.dirname(cliPath);
-  for (let depth = 0; depth < 6; depth += 1) {
-    const pkgPath = path.join(current, "package.json");
-    if (fssync.existsSync(pkgPath)) {
-      try {
-        const pkg = JSON.parse(fssync.readFileSync(pkgPath, "utf-8"));
-        if (pkg && pkg.name === "electron-builder") {
-          return current;
-        }
-      } catch (error) {
-        // Ignore parse failure and continue climbing.
-      }
-    }
-
-    const parent = path.dirname(current);
-    if (parent === current) {
-      break;
-    }
-    current = parent;
-  }
-
-  return "";
-}
-
-async function restoreCachedBuilderFromBundled(onLog = noop) {
-  const bundledCli = resolveBundledBuilderCliPath();
-  if (!bundledCli) {
-    return "";
-  }
-
-  const bundledPackageRoot = resolveBuilderPackageRootFromCli(bundledCli);
-  if (!bundledPackageRoot) {
-    return "";
-  }
-  const cacheDir = path.join(CACHE_PATHS.toolchainRoot, `electron-builder-${ELECTRON_BUILDER_VERSION}`);
-
-  await rmWithRetry(cacheDir, { recursive: true, force: true }).catch(noop);
-  await fs.mkdir(path.dirname(cacheDir), { recursive: true });
-  await fs.cp(bundledPackageRoot, cacheDir, { recursive: true, force: true });
-
-  const cacheCli = path.join(cacheDir, "cli.js");
-  if (await pathExists(cacheCli)) {
-    onLog(`已从内置工具链恢复缓存: ${cacheDir}\n`);
-    return cacheCli;
-  }
-
-  const cacheCliFallback = path.join(cacheDir, "out", "cli", "cli.js");
-  if (await pathExists(cacheCliFallback)) {
-    onLog(`已从内置工具链恢复缓存: ${cacheDir}\n`);
-    return cacheCliFallback;
-  }
-
-  return "";
-}
-
 function isCachedBuilderComplete(cacheDir) {
   try {
-    require.resolve("electron-builder/cli.js", { paths: [cacheDir] });
+    if (!fssync.existsSync(path.join(cacheDir, "node_modules", "electron-builder", "cli.js"))) return false;
+    if (!fssync.existsSync(path.join(cacheDir, "node_modules", "app-builder-lib", "package.json"))) return false;
     require.resolve("app-builder-lib/out/electron/electronVersion", {
       paths: [cacheDir],
     });
@@ -518,18 +464,8 @@ async function bootstrapCachedBuilderCli(onLog = noop) {
       }
     }
 
-    const restoredCli = await restoreCachedBuilderFromBundled(onLog);
-    if (restoredCli) {
-      return restoredCli;
-    }
-
-    const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-    const systemNpmAvailable = hasExecutable(npmCommand);
-    const bundledNpmCli = systemNpmAvailable ? "" : resolveBundledNpmCliPath();
-    if (!systemNpmAvailable && !bundledNpmCli) {
-        const checkedRoots = collectBundledNodeModuleRoots();
-        throw new Error(`当前环境未检测到 npm，且未找到内置 npm-cli，无法自动安装缓存工具链。\n(内置 npm 检索路径: ${checkedRoots.join(" | ")})`);
-    }
+    const runtime = resolveBuilderRuntime();
+    const npm = createNpmCommand(runtime);
     await rmWithRetry(cacheDir, { recursive: true, force: true }).catch(noop);
     await fs.mkdir(cacheDir, { recursive: true });
 
@@ -549,38 +485,10 @@ async function bootstrapCachedBuilderCli(onLog = noop) {
     );
 
     onLog(`本地工具链缺失，正在下载并安装 electron-builder@${ELECTRON_BUILDER_VERSION} 到缓存目录...\n`);
-    let installResult;
-    if (systemNpmAvailable) {
-      installResult = await runCommandCapture(
-        npmCommand,
-        ["install", "--no-audit", "--no-fund", "--include=optional"],
-        {
-          cwd: cacheDir,
-          windowsHide: true,
-          env: {
-            ...process.env,
-            npm_config_cache: CACHE_PATHS.npmCache,
-            NPM_CONFIG_CACHE: CACHE_PATHS.npmCache,
-          },
-        }
-      );
-    } else {
-      onLog(`系统 npm 不可用，改用内置 npm-cli: ${bundledNpmCli}\n`);
-      installResult = await runCommandCapture(
-        process.execPath,
-        [bundledNpmCli, "install", "--no-audit", "--no-fund", "--include=optional"],
-        {
-          cwd: cacheDir,
-          windowsHide: true,
-          env: {
-            ...process.env,
-            ELECTRON_RUN_AS_NODE: "1",
-            npm_config_cache: CACHE_PATHS.npmCache,
-            NPM_CONFIG_CACHE: CACHE_PATHS.npmCache,
-          },
-        }
-      );
-    }
+    const installResult = await runCommandCapture(npm.command,
+      [...npm.prefixArgs, "install", "--no-audit", "--no-fund", "--include=optional"],
+      { cwd: cacheDir, env: npm.env, buildSession: activeBuild, onLog });
+    assertBuildNotCanceled(activeBuild);
 
     if (installResult.code !== 0) {
       const detail = (installResult.stderr || installResult.stdout || "").trim();
@@ -884,63 +792,6 @@ function getPortableUnpackDirName(form) {
   );
 }
 
-function createPersistentPortableNsiScript(script) {
-  const source = String(script || "");
-  const flexibleNewline = "\\r?\\n\\s*";
-  const tempDirBlockPattern = new RegExp(
-    [
-      ' StrCpy \\$INSTDIR "\\$PLUGINSDIR\\\\app"',
-      "!ifdef UNPACK_DIR_NAME",
-      'StrCpy \\$INSTDIR "\\$TEMP\\\\\\$\\{UNPACK_DIR_NAME\\}"',
-      "!endif",
-    ].join(flexibleNewline)
-  );
-  const persistentDirBlock = [
-    ' StrCpy $INSTDIR "$PLUGINSDIR\\app"',
-    " !ifdef UNPACK_DIR_NAME",
-    ' StrCpy $INSTDIR "$EXEDIR\\${UNPACK_DIR_NAME}"',
-    " !endif",
-  ].join("\n");
-
-  if (!tempDirBlockPattern.test(source)) {
-    throw new Error("当前 electron-builder portable.nsi 模板结构不匹配，无法启用当前目录持久化绿色版。");
-  }
-
-  const withVisibleProgress = source
-    .replace(
-      /(AutoCloseWindow\s+True[^\S\r\n]*(?:\r?\n))/,
-      'LoadLanguageFile "${NSISDIR}\\Contrib\\Language files\\English.nlf"\n$1'
-    )
-    .replace(
-      /(AutoCloseWindow\s+True[^\S\r\n]*(?:\r?\n))/,
-      "$1ShowInstDetails show\n"
-    )
-    .replace(
-      /(RequestExecutionLevel\s+\$\{REQUEST_EXECUTION_LEVEL\}[^\S\r\n]*(?:\r?\n))/,
-      "$1Page instfiles\n"
-    )
-    .replace(
-      /([ \t]*)!ifndef SPLASH_IMAGE[^\S\r\n]*(?:\r?\n)[ \t]*SetSilent silent[^\S\r\n]*(?:\r?\n)[ \t]*!endif/,
-      "$1; Self-extract mode shows the extraction progress window."
-    );
-  const withPersistentDir = withVisibleProgress.replace(tempDirBlockPattern, persistentDirBlock);
-  const launchAppPattern =
-    /^([ \t]*)ExecWait\s+"\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}[^"]*"\s+\$0[^\S\r\n]*(?:\r?\n[ \t]*SetErrorLevel\s+\$0[^\S\r\n]*)?/m;
-  const withoutLaunch = withPersistentDir.replace(
-    launchAppPattern,
-    "$1; Self-extract mode does not launch the app after extraction."
-  );
-  const exitCleanupPattern = /([ \t]*SetOutPath \$EXEDIR[^\S\r\n]*(?:\r?\n)(?:[ \t]*(?:\r?\n))*)([ \t]*)RMDir \/r \$INSTDIR(?=\r?\n|$)/;
-  if (!exitCleanupPattern.test(withoutLaunch)) {
-    throw new Error("当前 electron-builder portable.nsi 未找到退出清理语句，无法安全 patch。");
-  }
-
-  return withoutLaunch.replace(
-    exitCleanupPattern,
-    "$1$2System::Call 'shell32.dll::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'\n$2RMDir /r \"$$PLUGINSDIR\"\n$2MessageBox MB_OK \"Extraction complete.\"\n$2; persistent portable mode keeps unpacked files beside the executable."
-  );
-}
-
 function compareNumericVersionsDescending(left, right) {
   const leftParts = String(left || "").split(".").map(Number);
   const rightParts = String(right || "").split(".").map(Number);
@@ -1180,7 +1031,7 @@ async function getRuntimeVersionOptions() {
   }
 }
 
-async function findFirstHtmlFile(rootDir) {
+async function findFirstHtmlFile(rootDir, outputDir = "") {
   const queue = [""];
   while (queue.length > 0) {
     const relativeDir = queue.shift();
@@ -1196,7 +1047,7 @@ async function findFirstHtmlFile(rootDir) {
 
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        if (shouldSkipHtmlCopyPath(rootDir, "", path.join(absDir, entry.name))) {
+        if (shouldSkipHtmlCopyPath(rootDir, outputDir, path.join(absDir, entry.name))) {
           continue;
         }
         queue.push(path.join(relativeDir, entry.name));
@@ -1442,10 +1293,6 @@ function uniqueLines(lines) {
   return Array.from(new Set(lines.filter(Boolean)));
 }
 
-function toPosixLowerPath(inputPath) {
-  return toPosixPath(inputPath).toLowerCase();
-}
-
 function isPathInside(parentPath, childPath) {
   const relativePath = path.relative(parentPath, childPath);
   return Boolean(relativePath) && relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`) && !path.isAbsolute(relativePath);
@@ -1496,8 +1343,11 @@ function normalizeHtmlOnlyFilesGlobs(raw) {
     "!**/win-unpacked/**",
     "!**/app.asar.unpacked/**",
   ];
-  const userLines = parseLines(raw).map((line) => line.startsWith("!")
-    ? `!app-source/${line.slice(1)}` : `app-source/${line}`);
+  const userLines = parseLineItems(raw).map((item) => {
+    if (typeof item === "string") return item.startsWith("!") ? `!app-source/${item.slice(1)}` : `app-source/${item}`;
+    const from = item.from && path.isAbsolute(item.from) ? item.from : path.posix.join("app-source", toPosixPath(item.from || "."));
+    return JSON.stringify({ ...item, from, to: path.posix.join("app-source", toPosixPath(item.to || ".")) });
+  });
 
   if (userLines.length === 0) {
     return required.join("\n");
@@ -1591,6 +1441,7 @@ function resolveBuilderRuntime() {
   const probe = spawnSync("node", ["--version"], {
     windowsHide: true,
     encoding: "utf-8",
+    timeout: 5000,
   });
 
   if (probe.status === 0) {
@@ -1598,28 +1449,6 @@ function resolveBuilderRuntime() {
       command: "node",
       mode: "node",
     };
-  }
-
-  // 检查 process.execPath 是否为 Electron 可执行文件（含 electron/html2exe 等）
-  const execPathLower = String(process.execPath || "").toLowerCase();
-  const isElectronExecutable = execPathLower.includes("electron") || 
-                               execPathLower.includes("html2exe") ||
-                               execPathLower.includes(".asar");
-  
-  // 如果是 Electron 可执行文件，尝试使用 npm exec 作为后备
-  if (isElectronExecutable) {
-    const npmProbe = spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", ["--version"], {
-      windowsHide: true,
-      encoding: "utf-8",
-    });
-    
-    if (npmProbe.status === 0) {
-      return {
-        command: process.platform === "win32" ? "npm.cmd" : "npm",
-        mode: "npm-exec-fallback",
-        useFallback: true,
-      };
-    }
   }
 
   return {
@@ -1632,6 +1461,7 @@ function hasExecutable(command, versionArgs = ["--version"]) {
   const probe = spawnSync(command, versionArgs, {
     windowsHide: true,
     encoding: "utf-8",
+    timeout: 5000,
   });
   return probe.status === 0;
 }
@@ -1654,52 +1484,13 @@ function resolveLocalBuilderCliPath() {
   return "";
 }
 
-function resolvePortableTemplatePathFromBuilderCli(builderCliPath) {
-  if (!builderCliPath) {
-    return "";
-  }
-
-  const builderPackageRoot = resolveBuilderPackageRootFromCli(builderCliPath);
-  if (!builderPackageRoot) {
-    return "";
-  }
-
-  const nodeModulesRoot = path.dirname(builderPackageRoot);
-  const candidates = [
-    path.join(nodeModulesRoot, "app-builder-lib", "templates", "nsis", "portable.nsi"),
-    path.join(builderPackageRoot, "node_modules", "app-builder-lib", "templates", "nsis", "portable.nsi"),
-  ];
-
-  return candidates.find((candidate) => fssync.existsSync(candidate)) || "";
-}
-
 async function applyPersistentPortableTemplatePatch(launcher, config, onLog = noop) {
-  if (!config || !config.portable) {
-    return async () => {};
+  if (config?.portable) {
+    const { templatePath } = validatePortableTemplate(launcher.builderCliPath);
+    launcher.persistentPortable = true;
+    onLog(`已启用构建进程内的绿色版模板: ${templatePath}\n`);
   }
-
-  const templatePath = resolvePortableTemplatePathFromBuilderCli(launcher && launcher.builderCliPath);
-  if (!templatePath) {
-    throw new Error("已选择 Windows 绿色版 portable，但当前构建器入口无法定位 portable.nsi 模板，无法生成当前目录持久化自解压 EXE。");
-  }
-
-  const originalScript = await fs.readFile(templatePath, "utf-8");
-  const patchedScript = createPersistentPortableNsiScript(originalScript);
-  if (patchedScript === originalScript) {
-    return async () => {};
-  }
-
-  await fs.writeFile(templatePath, patchedScript, "utf-8");
-  onLog(`已启用绿色版自解压策略: ${templatePath}\n`);
-
-  let restored = false;
-  return async () => {
-    if (restored) {
-      return;
-    }
-    restored = true;
-    await fs.writeFile(templatePath, originalScript, "utf-8");
-  };
+  return async () => {};
 }
 
 function shouldPatchPersistentPortableTemplate(form, config, platform = process.platform) {
@@ -1728,93 +1519,29 @@ function shouldPatchPersistentPortableTemplate(form, config, platform = process.
 }
 
 async function resolveBuilderLauncher(runtime, onLog = noop) {
-  const localBuilderCli = resolveLocalBuilderCliPath();
-
-  // Electron 打包态下，process.argv 可能包含重复的可执行路径，
-  // 需要在 -e 内联脚本里归一化 argv，避免 electron-builder 把 cli.js 识别为业务参数。
-  const getSafePrefixArgs = (cliPath) => {
-    if (runtime.mode === "electron-node") {
-      const cliLiteral = JSON.stringify(cliPath);
-      const patchCode = [
-        "process.defaultApp = true;",
-        "process.noAsar = true;",
-        "const argv = process.argv.slice();",
-        "if (argv.length > 1 && argv[1] === process.execPath) argv.splice(1, 1);",
-        `process.argv = [process.execPath, ${cliLiteral}, ...argv.slice(1)];`,
-        `require(${cliLiteral});`,
-      ].join(" ");
-      return ["-e", patchCode];
-    }
-    return [cliPath];
-  };
-
-  if (localBuilderCli && !runtime.useFallback) {
-    onLog(`检测到可用 electron-builder CLI: ${localBuilderCli}\n`);
-    return {
-      source: "local",
-      command: runtime.command,
-      prefixArgs: getSafePrefixArgs(localBuilderCli),
-      mode: runtime.mode,
-      builderCliPath: localBuilderCli,
-      description: "本地 electron-builder CLI（" + runtime.mode + "）",
-    };
+  const builderCliPath = resolveLocalBuilderCliPath() || await bootstrapCachedBuilderCli(onLog);
+  const runnerPath = path.join(__dirname, "scripts", "electron-builder-runner.js");
+  let prefixArgs = [runnerPath, builderCliPath];
+  if (runtime.mode === "electron-node") {
+    const patchCode = [
+      "process.defaultApp = true; process.noAsar = true;",
+      "const argv = process.argv.slice();",
+      "if (argv.length > 1 && argv[1] === process.execPath) argv.splice(1, 1);",
+      `process.argv = [process.execPath, ${JSON.stringify(runnerPath)}, ...argv.slice(1)];`,
+      `require(${JSON.stringify(runnerPath)});`,
+    ].join(" ");
+    prefixArgs = ["-e", patchCode, builderCliPath];
   }
+  onLog(`使用 electron-builder CLI: ${builderCliPath}\n`);
+  return { command: runtime.command, prefixArgs, mode: runtime.mode, builderCliPath, description: "本地或缓存 electron-builder CLI" };
+}
 
-  let cacheBootstrapError = "";
-  if (!runtime.useFallback) {
-    try {
-      const cachedBuilderCli = await bootstrapCachedBuilderCli(onLog);
-      if (cachedBuilderCli) {
-        return {
-          source: "cache",
-          command: runtime.command,
-          prefixArgs: getSafePrefixArgs(cachedBuilderCli),
-          mode: runtime.mode,
-          builderCliPath: cachedBuilderCli,
-          description: "缓存工具链 electron-builder CLI",
-        };
-      }
-    } catch (error) {
-      cacheBootstrapError = error && error.message ? error.message : String(error || "未知错误");
-      onLog(`缓存工具链初始化失败，将尝试 npx/npm 兜底: ${cacheBootstrapError}\n`);
-    }
-  }
-
-  const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
-  if (hasExecutable(npxCommand)) {
-    return {
-      source: "npx",
-      command: npxCommand,
-      prefixArgs: ["--yes", `electron-builder@${ELECTRON_BUILDER_VERSION}`],
-      mode: "npx",
-      description: "npx electron-builder",
-    };
-  }
-
-  const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-  if (hasExecutable(npmCommand)) {
-    return {
-      source: "npm-exec",
-      command: npmCommand,
-      prefixArgs: [
-        "exec",
-        "--yes",
-        "--package",
-        `electron-builder@${ELECTRON_BUILDER_VERSION}`,
-        "--",
-        "electron-builder",
-      ],
-      mode: "npm-exec",
-      description: "npm exec electron-builder",
-    };
-  }
-
-  const cacheHint = cacheBootstrapError
-    ? ` 缓存工具链失败原因: ${cacheBootstrapError}`
-    : "";
-  throw new Error(
-    `未找到可用的 electron-builder 入口（本地 CLI / 缓存工具链 / npx / npm exec）。请安装 Node.js（含 npm）或使用内置 electron-builder 重新打包本工具后再试。${cacheHint}`
-  );
+function createNpmCommand(runtime) {
+  const npmCli = resolveNpmCli({ bundledCli: resolveBundledNpmCliPath() });
+  if (!npmCli) throw new Error("未找到可用的 npm-cli，请安装 npm 或重新生成内置工具链。");
+  const env = { ...process.env, npm_config_cache: CACHE_PATHS.npmCache, NPM_CONFIG_CACHE: CACHE_PATHS.npmCache };
+  if (runtime.mode === "electron-node") { env.ELECTRON_RUN_AS_NODE = "1"; env.ELECTRON_NO_ASAR = "1"; }
+  return { command: runtime.command, prefixArgs: [npmCli], env };
 }
 
 function getGeneratedWindowOptions(form) {
@@ -1850,8 +1577,13 @@ function hasWindowUiOverride(form) {
 
 async function readProjectManifest(projectDir) {
   const pkgPath = path.join(projectDir, "package.json");
-  const content = await fs.readFile(pkgPath, "utf-8");
-  return JSON.parse(content);
+  try {
+    const pkg = JSON.parse((await fs.readFile(pkgPath, "utf8")).replace(/^\uFEFF/, ""));
+    if (!pkg || typeof pkg !== "object" || Array.isArray(pkg)) throw new Error("清单内容必须是对象");
+    return pkg;
+  } catch (error) {
+    throw new Error(`无法读取项目清单 ${pkgPath}: ${error.message}`);
+  }
 }
 
 function toAuthorText(author) {
@@ -2058,7 +1790,7 @@ function createHtmlOnlyAfterPackHookContent() {
     "    args.push(\"--set-icon\", iconPath);",
     "  }",
     "",
-    "  const result = spawnSync(rceditPath, args, { stdio: \"pipe\" });",
+    "  const result = spawnSync(rceditPath, args, { stdio: \"pipe\", windowsHide: true });",
     "  if (result.status !== 0) {",
     "    const stderr = result.stderr ? result.stderr.toString() : \"\";",
     "    const stdout = result.stdout ? result.stdout.toString() : \"\";",
@@ -2402,7 +2134,9 @@ function isSelfBuildProject(projectDir) {
     }
 
     const pkg = JSON.parse(fssync.readFileSync(pkgPath, "utf-8"));
-    return pkg && pkg.name === "html2exe";
+    return pkg && pkg.name === "html2exe" &&
+      fssync.existsSync(path.join(projectDir, "scripts", "pack-toolchain.js")) &&
+      fssync.existsSync(path.join(projectDir, "preload.js"));
   } catch (error) {
     return false;
   }
@@ -2657,12 +2391,12 @@ async function materializeIconPathForBuilder(iconPath, platformKey, projectDir =
   return materializedPath;
 }
 
-async function materializeBuildIconsForExternalTools(config, projectDir = "", onLog = noop) {
+async function materializeBuildIconsForExternalTools(config, projectDir = "", onLog = noop, platforms = ["win", "linux", "mac"]) {
   if (!config || typeof config !== "object") {
     return;
   }
 
-  if (config.win && config.win.icon) {
+  if (platforms.includes("win") && config.win && config.win.icon) {
     config.win.icon = await materializeIconPathForBuilder(config.win.icon, "win", projectDir, onLog);
     if (!config.win.icon) {
       delete config.win.icon;
@@ -2676,7 +2410,7 @@ async function materializeBuildIconsForExternalTools(config, projectDir = "", on
       }
     }
   }
-  if (config.linux && config.linux.icon) {
+  if (platforms.includes("linux") && config.linux && config.linux.icon) {
     config.linux.icon = await materializeIconPathForBuilder(config.linux.icon, "linux", projectDir, onLog);
     if (!config.linux.icon) {
       delete config.linux.icon;
@@ -2684,7 +2418,7 @@ async function materializeBuildIconsForExternalTools(config, projectDir = "", on
       onLog(`Linux 图标最终路径: ${config.linux.icon}\n`);
     }
   }
-  if (config.mac && config.mac.icon) {
+  if (platforms.includes("mac") && config.mac && config.mac.icon) {
     config.mac.icon = await materializeIconPathForBuilder(config.mac.icon, "mac", projectDir, onLog);
     if (!config.mac.icon) {
       delete config.mac.icon;
@@ -2694,7 +2428,7 @@ async function materializeBuildIconsForExternalTools(config, projectDir = "", on
   }
 }
 
-async function ensureProjectDependencies(projectDir, runtime, onLog = noop, onStatus = noop) {
+async function ensureProjectDependencies(projectDir, runtime, onLog = noop, onStatus = noop, options = {}) {
   const pkgPath = path.join(projectDir, "package.json");
   if (!(await pathExists(pkgPath))) {
     return;
@@ -2707,7 +2441,7 @@ async function ensureProjectDependencies(projectDir, runtime, onLog = noop, onSt
     return;
   }
 
-  const sourceIsHtmlOnlyBootstrap = path.basename(projectDir).startsWith("electron-html-pack-");
+  const sourceIsHtmlOnlyBootstrap = options.htmlOnly === true;
   if (sourceIsHtmlOnlyBootstrap) {
     onLog("纯 HTML 自动补全项目无需预装 node_modules，跳过依赖安装。\n");
     updateStep(onStatus, STEP_KEYS.INSTALL, "done", "纯 HTML 模式无需安装依赖");
@@ -2717,15 +2451,7 @@ async function ensureProjectDependencies(projectDir, runtime, onLog = noop, onSt
   updateStep(onStatus, STEP_KEYS.INSTALL, "running", "安装项目依赖中");
   onLog("检测到项目缺少依赖，正在自动安装（先装依赖再打包）...\n");
 
-  const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-  const systemNpmAvailable = hasExecutable(npmCommand);
-  const bundledNpmCli = systemNpmAvailable ? "" : resolveBundledNpmCliPath();
-
-  if (!systemNpmAvailable && !bundledNpmCli) {
-    const checkedRoots = collectBundledNodeModuleRoots();
-    onLog(`内置 npm-cli 检索路径: ${checkedRoots.join(" | ")}\n`);
-    throw new Error("当前环境未检测到 npm，且未找到内置 npm-cli，无法自动安装项目依赖。请使用带内置工具链的新版本重新打包本工具。");
-  }
+  const npm = createNpmCommand(runtime);
   const hasPackageLock = await pathExists(path.join(projectDir, "package-lock.json"));
   const installArgs = [
     hasPackageLock ? "ci" : "install",
@@ -2735,32 +2461,10 @@ async function ensureProjectDependencies(projectDir, runtime, onLog = noop, onSt
     "--include=optional",
   ];
 
-  let command;
-  let args;
-  let env;
-
-  if (systemNpmAvailable) {
-    command = npmCommand;
-    args = installArgs;
-    env = {
-      ...process.env,
-      npm_config_cache: CACHE_PATHS.npmCache,
-      NPM_CONFIG_CACHE: CACHE_PATHS.npmCache,
-    };
-    onLog(`使用系统 npm 安装项目依赖: ${npmCommand} ${installArgs.join(" ")}\n`);
-  } else {
-    command = runtime.command;
-    args = [bundledNpmCli, ...installArgs];
-    env = {
-      ...process.env,
-      npm_config_cache: CACHE_PATHS.npmCache,
-      NPM_CONFIG_CACHE: CACHE_PATHS.npmCache,
-    };
-    if (runtime.mode === "electron-node") {
-      env.ELECTRON_RUN_AS_NODE = "1";
-    }
-    onLog(`系统 npm 不可用，改用内置 npm-cli 安装项目依赖: ${bundledNpmCli}\n`);
-  }
+  const { command, env } = npm;
+  if (options.form) applyRuntimeVersionOverrides(options.form, env, onLog);
+  const args = [...npm.prefixArgs, ...installArgs];
+  onLog(`使用 npm-cli 安装项目依赖: ${npm.prefixArgs[0]}\n`);
 
   const installResult = await runCommandCapture(command, args, {
     buildSession: activeBuild,
@@ -2842,7 +2546,7 @@ async function prepareWorkspaceForBuild(form, onLog, onStatus = noop) {
 
   updateStep(onStatus, STEP_KEYS.TEMP_PROJECT, "running", "创建临时 Electron 项目");
 
-  const htmlEntry = await findFirstHtmlFile(sourceDir);
+  const htmlEntry = await findFirstHtmlFile(sourceDir, path.resolve(sourceDir, form.outputDir || "release"));
   if (!htmlEntry) {
     throw new Error("目录缺少 package.json，且未找到任何 .html 文件，无法自动补全打包。");
   }
@@ -2874,7 +2578,10 @@ async function prepareWorkspaceForBuild(form, onLog, onStatus = noop) {
       ["darwin", form.macIcon],
     ];
 
+    const selectedRuntimePlatforms = { win32: form.targetWindows, linux: form.targetLinux, darwin: form.targetMac };
+    const hasSelectedPlatform = Object.values(selectedRuntimePlatforms).some(Boolean);
     for (const [platformKey, iconInput] of runtimeIconCandidates) {
+      if (hasSelectedPlatform && !selectedRuntimePlatforms[platformKey]) continue;
       const resolvedIconPath = resolveIconPathAgainstProject(iconInput || "", sourceDir);
       if (!resolvedIconPath || !(await pathExists(resolvedIconPath))) {
         continue;
@@ -2908,6 +2615,7 @@ async function prepareWorkspaceForBuild(form, onLog, onStatus = noop) {
     ];
 
     for (const [platformKey, configuredIcon, copiedIcon] of requiredRuntimeIconChecks) {
+      if (hasSelectedPlatform && !selectedRuntimePlatforms[platformKey]) continue;
       const configured = String(configuredIcon || "").trim();
       if (configured && !copiedIcon) {
         throw new Error(`纯 HTML 模式复制图标失败(${platformKey})，已阻止继续打包以避免回退默认图标: ${configured}`);
@@ -3079,7 +2787,7 @@ async function executeBuild(form, onLog, onStatus, session) {
     normalizedForm.electronVersion = resolveElectronVersionFromManifest(pkg, pkg.build || {});
   }
   const runtime = resolveBuilderRuntime();
-  await ensureProjectDependencies(buildProjectDir, runtime, onLog, onStatus);
+  await ensureProjectDependencies(buildProjectDir, runtime, onLog, onStatus, { htmlOnly: prepared.htmlOnly, form: normalizedForm });
 
   const config = injectSelfBuildToolchainResources(buildProjectDir,
     mergeBuildConfig(pkg.build || {}, buildTargetConfig(normalizedForm)));
@@ -3108,66 +2816,16 @@ async function executeBuild(form, onLog, onStatus, session) {
     const requestedWinIconPath = resolveIconPathAgainstProject(form.winIcon || "", projectDir);
     const hasConfiguredWindowsIcon = Boolean(requestedWinIconPath) && fssync.existsSync(requestedWinIconPath);
 
-    // 兼容非管理员/未开启开发者模式的 Windows：
-    // 无自定义图标时跳过 exe 资源编辑，降低 winCodeSign 压缩包解压符号链接失败概率。
-    // 有自定义图标时保留资源编辑，否则 Windows 可执行文件图标不会生效。
-    if (!config.win || typeof config.win !== "object") {
-      config.win = {};
-    }
+    config.win = config.win || {};
     config.win.signAndEditExecutable = false;
     config.forceCodeSigning = false;
-    onLog("纯 HTML 模式已启用 beforeBuild 跳过依赖扫描策略（兼容无 Node.js 环境）。\n");
-    if (hasConfiguredWindowsIcon) {
-      onLog("检测到已配置 Windows 图标，将在 afterPack 阶段使用 rcedit 写入 exe 图标（已禁用 winCodeSign 依赖路径）。\n");
-    } else {
-      const existingWinTargets = Array.isArray(config.win.target)
-        ? config.win.target
-        : [];
-      onLog("纯 HTML 模式已启用 Windows 受限环境兼容策略（跳过 exe 资源编辑/签名）。\n");
-
-      const installerRequested = existingWinTargets.some((target) => {
-        const lower = String(target || "").trim().toLowerCase();
-        return lower === "nsis" || lower === "nsis-web";
-      });
-
-      if (installerRequested) {
-        // 保持关闭，避免触发 winCodeSign 压缩包解压中的符号链接权限问题。
-        config.win.signAndEditExecutable = false;
-        config.forceCodeSigning = false;
-        if (hasConfiguredWindowsIcon) {
-          onLog("检测到已选择 Windows 安装包目标（nsis/nsis-web）且已配置 Windows 图标，将通过 afterPack+rcedit 写入安装后应用图标。\n");
-        } else {
-          onLog("检测到已选择 Windows 安装包目标（nsis/nsis-web），但未配置有效 Windows 图标，安装后应用图标将沿用默认值。\n");
-        }
-      } else {
-        if (existingWinTargets.length === 0) {
-          // 未显式指定目标时，electron-builder 的 Windows 默认目标即安装包（nsis）。
-          // 这里保持默认行为，避免把“默认安装包”误降级成 dir。
-          onLog("未显式指定 Windows 目标，保留 electron-builder 默认安装包策略（nsis）。\n");
-        } else {
-          const safeWinTargets = existingWinTargets
-            .map((target) => String(target || "").trim())
-            .filter(Boolean)
-            .filter((target) => {
-              const lower = target.toLowerCase();
-              return lower !== "nsis" && lower !== "nsis-web";
-            });
-
-          // Windows 受限环境里 NSIS 阶段会调用 app-builder.exe，易触发 0xC0000142。
-          // 未选择安装包时，若去掉 NSIS 后无其它目标，则回退为 dir，确保至少产出可运行目录。
-          if (safeWinTargets.length === 0) {
-            safeWinTargets.push("dir");
-          }
-
-          config.win.target = safeWinTargets;
-          delete config.nsis;
-          onLog(`纯 HTML 模式已自动调整 Windows 目标为: ${safeWinTargets.join(", ")}（未选择安装包，已跳过 NSIS）。\n`);
-        }
-      }
-    }
+    onLog("纯 HTML 模式跳过依赖扫描和自动签名，使用 afterPack+rcedit 写入 Windows 主程序元数据。\n");
+    if (hasConfiguredWindowsIcon) onLog("已配置 Windows 图标，将通过 rcedit 写入主程序。\n");
   }
 
-  await materializeBuildIconsForExternalTools(config, projectDir, onLog);
+  await materializeBuildIconsForExternalTools(config, projectDir, onLog,
+    [["win", normalizedForm.targetWindows], ["linux", normalizedForm.targetLinux], ["mac", normalizedForm.targetMac]]
+      .filter(([, enabled]) => enabled).map(([platform]) => platform));
 
   const tempConfigPath = path.join(
     CACHE_PATHS.builderTemp,
@@ -3195,6 +2853,7 @@ async function executeBuild(form, onLog, onStatus, session) {
 
   const childEnv = {
     ...process.env,
+    HTML2EXE_PERSISTENT_PORTABLE: launcher.persistentPortable ? "1" : "0",
     TEMP: CACHE_PATHS.appTemp,
     TMP: CACHE_PATHS.appTemp,
     TMPDIR: CACHE_PATHS.appTemp,
@@ -3388,6 +3047,7 @@ registerIpcHandler("dialog:pickIcon", async (_, extensions) => {
 });
 
 registerIpcHandler("settings:load", async () => {
+  await settingsWriteQueue;
   const saved = await readSettings();
   return {
     ...getDefaultFormSettings(),

@@ -135,6 +135,10 @@ test("纯 HTML 路径过滤不受上级 dist 目录影响，并保留排除规�
   assert.equal(context.shouldSkipHtmlCopyPath(source, "", path.join(source, "index.html")), false);
   assert.equal(context.shouldSkipHtmlCopyPath(source, "", path.join(source, ".cache")), true);
   assert.match(context.normalizeHtmlOnlyFilesGlobs("**/*\n!secrets/**"), /!app-source\/secrets\/\*\*/);
+  const fileSet = context.parseLineItems(context.normalizeHtmlOnlyFilesGlobs('{"from":"assets","to":"copy","filter":["**/*"]}'))
+    .find((item) => typeof item === "object");
+  assert.equal(fileSet.from, "app-source/assets");
+  assert.equal(fileSet.to, "app-source/copy");
   const prepared = await context.prepareWorkspaceForBuild({ projectDir: source, asar: false, extraResources: '{"from":"assets","to":"media"}' }, () => {});
   t.after(prepared.cleanup);
   assert.equal(fs.existsSync(path.join(prepared.projectDir, "app-source", "index.html")), true);
@@ -172,4 +176,11 @@ test("特权 IPC 拒绝远程页面和子框架", (t) => {
   assert.throws(() => context.validateIpcSender({ sender, senderFrame: { url: sender.mainFrame.url } }), /非应用页面/);
   sender.mainFrame.url = "https://example.com";
   assert.throws(() => context.validateIpcSender({ sender, senderFrame: sender.mainFrame }), /非应用页面/);
+});
+
+test("未选中的平台图标路径不会阻断其它平台构建", async (t) => {
+  const { context } = loadMain(t);
+  const config = { win: { icon: "missing.ico" }, linux: {} };
+  await context.materializeBuildIconsForExternalTools(config, repoRoot, () => {}, ["linux"]);
+  assert.equal(config.win.icon, "missing.ico");
 });

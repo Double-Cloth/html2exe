@@ -1,0 +1,10 @@
+{
+  "name": "bundled-toolchain",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "electron-builder": "26.15.3",
+    "npm": "11.21.1",
+    "rcedit": "4.0.1"
+  }
+}

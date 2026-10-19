@@ -1122,6 +1122,7 @@ async function init() {
       try {
         await saveConfig();
       } catch (error) {
+        setActionFeedback(`保存失败: ${error.message}`, "error");
         appendLog(`保存失败: ${error.message}`, "error");
       }
     });
@@ -1159,6 +1160,7 @@ async function init() {
       try {
         await loadProjectDefaults();
       } catch (error) {
+        setActionFeedback(`读取项目信息失败: ${error.message}`, "error");
         appendLog(`读取项目信息失败: ${error.message}`, "error");
       }
     });
@@ -1167,6 +1169,7 @@ async function init() {
   if (dom.clearCacheBtn) {
     dom.clearCacheBtn.addEventListener("click", () => {
       clearCache().catch((error) => {
+        setActionFeedback(`清理缓存失败: ${error.message}`, "error");
         appendLog(`清理缓存失败: ${error.message}`, "error");
       });
     });
@@ -1213,6 +1216,7 @@ async function init() {
 }
 
 init().catch((error) => {
+  setActionFeedback(`初始化失败: ${error.message}`, "error");
   appendLog(`初始化失败: ${error.message}`, "error");
 });
 

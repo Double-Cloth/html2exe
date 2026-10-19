@@ -194,6 +194,25 @@ test("首次追加日志时会清理输出页初始占位文本", () => {
   assert.doesNotMatch(text, /打包器已就绪待命中/);
 });
 
+test("输出页在读取保存配置期间阻止连续启动构建", async () => {
+  const context = loadRendererContext();
+  let resume;
+  let loads = 0;
+  let builds = 0;
+  context.window.builderApi.loadSettings = () => {
+    loads += 1;
+    return new Promise((resolve) => { resume = resolve; });
+  };
+  context.window.builderApi.saveSettings = async () => ({ success: true });
+  context.window.builderApi.runBuild = async () => { builds += 1; return { success: true, result: { success: true } }; };
+  const first = context.runBuild();
+  const second = context.runBuild();
+  assert.equal(loads, 1);
+  resume({ projectDir: repoRoot, targetWindows: true });
+  await Promise.all([first, second]);
+  assert.equal(builds, 1);
+});
+
 test("运行时版本字段自动保存时会保留当前表单的其它设置", async () => {
   const context = loadRendererContext();
   let savedPayload = null;
@@ -797,7 +816,7 @@ test("persistent portable NSIS script extracts beside exe and keeps files after 
     "SectionEnd",
   ].join("\n");
 
-  const patched = context.createPersistentPortableNsiScript(template);
+  const patched = require("../scripts/portable-template").createPersistentPortableNsiScript(template);
 
   assert.match(patched, /LoadLanguageFile "\$\{NSISDIR\}\\Contrib\\Language files\\English\.nlf"/);
   assert.match(patched, /ShowInstDetails show/);
@@ -831,7 +850,7 @@ test("persistent portable NSIS patch removes tab-indented exit cleanup", () => {
     "SectionEnd",
   ].join("\n");
 
-  const patched = context.createPersistentPortableNsiScript(template);
+  const patched = require("../scripts/portable-template").createPersistentPortableNsiScript(template);
   const exitSection = patched.slice(patched.indexOf(" SetOutPath $EXEDIR"));
 
   assert.match(patched, / RMDir \/r \$INSTDIR/);
@@ -853,7 +872,7 @@ test("persistent portable NSIS patch tolerates CRLF and blank lines", () => {
     "SectionEnd",
   ].join("\r\n");
 
-  const patched = context.createPersistentPortableNsiScript(template);
+  const patched = require("../scripts/portable-template").createPersistentPortableNsiScript(template);
 
   assert.match(patched, /\$EXEDIR\\\$\{UNPACK_DIR_NAME\}/);
   assert.doesNotMatch(patched, /\$TEMP\\\$\{UNPACK_DIR_NAME\}/);
