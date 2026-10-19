@@ -146,6 +146,8 @@ Windows 上的 FPM 目标需要宿主可用的 `fpm` 或 `CUSTOM_FPM_PATH`。跨
 
 ## 测试与提交前验证
 
+GitHub Actions 的 `.github/workflows/test.yml` 会在任意分支推送包含非文档变更时，使用 Windows 和 Node.js 24 执行 `npm ci`、`npm test`。仅修改 Markdown 文件、`doc/` 下的文件或 `LICENSE` 时跳过；代码与文档一起修改时仍运行测试。
+
 ```bash
 npm test
 node --test test/build-lifecycle.test.js
