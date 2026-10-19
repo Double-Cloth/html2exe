@@ -90,8 +90,7 @@ input, select, textarea, button { font-family: var(--font-body); font-size: 14px
 input, textarea { caret-color: var(--primary-active); }
 input[type="text"], input[type="email"], input[type="url"], select, textarea { width: 100%; min-width: 0; height: 40px; padding: 9px var(--space-sm); border: 1px solid var(--hairline); border-radius: var(--radius-md); background: var(--canvas); color: var(--ink); line-height: 1.5; }
 input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
-select { padding-right: var(--space-xl); cursor: pointer; }
-option { background: var(--canvas); color: var(--ink); }
+.tab-content select { display: none; }
 textarea { height: auto; min-height: 144px; resize: vertical; font-family: var(--font-code); font-size: 13px; line-height: 1.65; tab-size: 2; }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 15%, transparent); }
 input:disabled, select:disabled, textarea:disabled { color: var(--muted); background: var(--surface-soft); cursor: not-allowed; }
@@ -110,8 +109,43 @@ button:disabled { cursor: not-allowed; color: var(--muted); background: var(--su
 .checkbox-row { flex-direction: row; align-items: center; justify-content: space-between; gap: var(--space-md); min-height: 44px; padding: var(--space-sm) var(--space-md); background: var(--surface-soft); border-radius: var(--radius-md); position: relative; }
 .checkbox-row > label { flex: 1; cursor: pointer; }
 .checkbox-row > label[for]::after { content: ""; position: absolute; inset: 0; cursor: pointer; }
-input[type="checkbox"] { accent-color: var(--body-strong); width: 18px; height: 18px; margin: 0; flex-shrink: 0; cursor: pointer; position: relative; z-index: 1; }
-input[type="checkbox"]:disabled { cursor: not-allowed; }
+/* 保留复选框的语义与事件，外框、选中标记全部自行绘制。 */
+input[type="checkbox"] { appearance: none; -webkit-appearance: none; display: inline-grid; place-content: center; width: 18px; height: 18px; margin: 0; padding: 0; flex-shrink: 0; border: 1px solid var(--muted-soft); border-radius: 4px; background: var(--canvas); cursor: pointer; position: relative; z-index: 1; }
+input[type="checkbox"]::after { content: ""; width: 5px; height: 9px; margin-top: -2px; border: solid var(--on-primary); border-width: 0 2px 2px 0; transform: rotate(45deg); visibility: hidden; }
+input[type="checkbox"]:checked { border-color: var(--body-strong); background: var(--body-strong); }
+input[type="checkbox"]:checked::after { visibility: visible; }
+input[type="checkbox"]:indeterminate { border-color: var(--body-strong); background: var(--body-strong); }
+input[type="checkbox"]:indeterminate::after { width: 8px; height: 0; margin-top: 0; border-width: 0 0 2px; transform: none; visibility: visible; }
+input[type="checkbox"]:focus-visible { outline: 2px solid var(--primary-active); outline-offset: 3px; box-shadow: none; }
+input[type="checkbox"]:disabled { border-color: var(--hairline); background: var(--surface-soft); cursor: not-allowed; }
+input[type="checkbox"]:disabled:checked, input[type="checkbox"]:disabled:indeterminate { background: var(--primary-disabled); }
+input[type="checkbox"]:disabled::after { border-color: var(--muted); }
+
+/* 下拉列表使用页面内的自绘浮层，避免系统菜单与原生箭头。 */
+.custom-select, .custom-combobox { position: relative; min-width: 0; width: 100%; }
+.select-control { width: 100%; height: 40px; justify-content: space-between; padding: 9px var(--space-sm); font-weight: 400; text-align: left; }
+.control-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.control-arrow { width: 16px; height: 16px; flex-shrink: 0; color: var(--muted); pointer-events: none; }
+[aria-expanded="true"] > .control-arrow, .custom-combobox:has(input[aria-expanded="true"]) .control-arrow { transform: rotate(180deg); }
+.select-control:focus-visible, .select-control[aria-expanded="true"] { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 15%, transparent); }
+.custom-combobox > input { padding-right: 40px; }
+.combobox-toggle { position: absolute; inset: 0 0 0 auto; width: 40px; min-height: 40px; padding: 0; border: 0; background: transparent; border-radius: var(--radius-md); }
+.combobox-toggle:disabled { background: transparent; }
+.custom-options { position: fixed; inset: auto; z-index: 10; margin: 0; padding: var(--space-xxs); max-height: 280px; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--hairline); border-radius: var(--radius-md); background: var(--canvas); color: var(--ink); box-shadow: 0 4px 12px rgb(20 20 19 / 8%); }
+.custom-options::backdrop { background: transparent; }
+.custom-option { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); min-height: 40px; padding: 10px var(--space-sm); border-radius: var(--radius-sm); cursor: pointer; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.custom-option.is-active { background: var(--surface-card); }
+.custom-option[aria-disabled="true"] { color: var(--muted); cursor: not-allowed; }
+.option-copy { display: flex; flex-direction: column; min-width: 0; }
+.option-detail { color: var(--muted); font-size: 12px; }
+.option-check { width: 16px; height: 16px; flex-shrink: 0; visibility: hidden; }
+.custom-option[aria-selected="true"] .option-check { visibility: visible; }
+.custom-options-empty { margin: 0; padding: var(--space-sm); color: var(--muted); font-size: 13px; }
+@media (forced-colors: active) {
+  input[type="checkbox"]:checked, input[type="checkbox"]:indeterminate { forced-color-adjust: none; background: Highlight; border-color: Highlight; }
+  input[type="checkbox"]::after { border-color: HighlightText; }
+  .custom-option.is-active { outline: 1px solid Highlight; outline-offset: -1px; }
+}
 .four-col > label { display: flex; align-items: center; gap: var(--space-sm); min-height: 48px; padding: var(--space-sm) var(--space-md); border: 1px solid var(--hairline); border-radius: var(--radius-md); cursor: pointer; font-size: 13px; }
 .inline-checks { flex-direction: column; align-items: flex-start; padding: 0; background: transparent; }
 .checks { display: flex; gap: var(--space-sm); flex-wrap: wrap; width: 100%; }

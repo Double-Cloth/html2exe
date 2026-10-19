@@ -121,7 +121,7 @@
             <div class="grid three-col">
               <div class="field-row">
                 <label for="electronVersion">Electron 版本</label>
-                <input id="electronVersion" type="text" list="electronVersionOptions" placeholder="选择或输入，如 44.3.0；留空优先使用项目版本" />
+                <input id="electronVersion" type="text" data-options="electronVersionOptions" placeholder="选择或输入，如 44.3.0；留空优先使用项目版本" />
                 <datalist id="electronVersionOptions">
                   <option value="44.3.0" label="最新稳定版"></option>
                   <option value="43.6.0" label="上一稳定主版本"></option>
@@ -133,7 +133,7 @@
               </div>
               <div class="field-row">
                 <label for="chromiumVersion">Chromium 版本覆盖 (高级)</label>
-                <input id="chromiumVersion" type="text" list="chromiumVersionOptions" placeholder="选择或输入，如 152.0.7977.78，可留空" />
+                <input id="chromiumVersion" type="text" data-options="chromiumVersionOptions" placeholder="选择或输入，如 152.0.7977.78，可留空" />
                 <datalist id="chromiumVersionOptions">
                   <option value="152.0.7977.78" label="Electron 44.3.0 内置"></option>
                   <option value="150.0.7871.250" label="Electron 43.6.0 内置"></option>
@@ -145,7 +145,7 @@
               </div>
               <div class="field-row">
                 <label for="nodeVersion">Node.js 版本覆盖 (高级)</label>
-                <input id="nodeVersion" type="text" list="nodeVersionOptions" placeholder="选择或输入，如 24.21.0，可留空" />
+                <input id="nodeVersion" type="text" data-options="nodeVersionOptions" placeholder="选择或输入，如 24.21.0，可留空" />
                 <datalist id="nodeVersionOptions">
                   <option value="26.8.1" label="最新 Current"></option>
                   <option value="24.21.0" label="最新 LTS (Krypton)"></option>
@@ -398,6 +398,7 @@ resources/native/**"></textarea>
       </div>
     </main>
     <script src="./config.js"></script>
+    <script src="./controls.js"></script>
     <script src="./renderer.js"></script>
   </body>
 </html>

@@ -546,6 +546,7 @@ function syncTargetDependentControls() {
       el.classList.toggle("disabled-by-target", !enabled);
     });
   });
+  window.customFormControls?.sync();
 }
 
 function applyBuildPreset(presetKey, source = "manual") {

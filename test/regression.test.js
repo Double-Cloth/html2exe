@@ -245,6 +245,23 @@ function loadMainContext() {
   return context;
 }
 
+test("导入、预设与重置完成后同步自绘控件的显示值", () => {
+  const context = loadRendererContext();
+  const compression = new FakeElement("compression");
+  compression.type = "select-one";
+  compression.value = "normal";
+  context.__elements.set("compression", compression);
+  const displayed = [];
+  context.window.customFormControls = { sync: () => displayed.push(compression.value) };
+
+  context.applyStateToForm({ compression: "maximum" });
+  assert.equal(displayed.at(-1), "maximum");
+  context.applyBuildPreset("quick", "initial");
+  assert.equal(displayed.at(-1), "store");
+  context.resetFormToDefaults();
+  assert.equal(displayed.at(-1), "normal");
+});
+
 test("首次追加日志时会清理输出页初始占位文本", () => {
   const context = loadRendererContext();
 
