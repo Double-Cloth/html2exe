@@ -176,34 +176,64 @@ function resolveDefaultMacIconPath() {
   return cachedDefaultMacIconPath;
 }
 
-function runCommandCapture(command, args, options = {}) {
-  return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      ...options,
-      stdio: "pipe",
-    });
+function assertBuildNotCanceled(session) {
+  if (session && session.canceled) {
+    throw new Error("构建已取消。");
+  }
+}
 
-    let stdout = "";
-    let stderr = "";
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-
-    child.on("error", (error) => {
-      resolve({
-        code: -1,
-        stdout,
-        stderr: `${stderr}\n${error.message}`.trim(),
+async function terminateBuildChild(child) {
+  if (!child || !child.pid || child.exitCode !== null || child.signalCode) return;
+  if (process.platform === "win32") {
+    await new Promise((resolve, reject) => {
+      const killer = spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true });
+      killer.once("error", reject);
+      killer.once("close", (code) => {
+        if (code === 0 || child.exitCode !== null || child.signalCode) resolve();
+        else reject(new Error(`无法终止构建进程树，taskkill 退出码: ${code}`));
       });
     });
+    return;
+  }
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error;
+    child.kill("SIGKILL");
+  }
+}
 
-    child.on("close", (code) => {
-      resolve({ code: Number(code), stdout, stderr });
+function runCommandCapture(command, args, options = {}) {
+  const { buildSession: session = null, onLog = noop, ...spawnOptions } = options;
+  assertBuildNotCanceled(session);
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      ...spawnOptions,
+      detached: process.platform !== "win32",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (session) session.child = child;
+    let stdout = "";
+    let stderr = "";
+    let launchError = null;
+    // 依赖安装和构建日志实时输出，只保留尾部供失败诊断，避免无限占用内存。
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (text) => {
+      stdout = (stdout + text).slice(-1024 * 1024);
+      onLog(text);
+    });
+    child.stderr.on("data", (text) => {
+      stderr = (stderr + text).slice(-1024 * 1024);
+      onLog(text);
+    });
+    child.once("error", (error) => { launchError = error; });
+    child.once("close", (code, signal) => {
+      if (session && session.child === child) session.child = null;
+      resolve({ code: code === null ? -1 : code, signal, stdout,
+        stderr: launchError ? `${stderr}\n${launchError.message}`.trim() : stderr,
+        launchError });
     });
   });
 }
@@ -612,143 +642,19 @@ function toPosixPath(inputPath) {
   return String(inputPath || "").replace(/\\/g, "/");
 }
 
-function collectUnlockCandidates(targetPath, errorMessage = "") {
-  const candidates = new Set();
-  const normalizedTarget = path.resolve(targetPath);
-  candidates.add(normalizedTarget);
-  candidates.add(path.dirname(normalizedTarget));
-
-  const message = String(errorMessage || "");
-  const pathMatch = message.match(/'([^']+)'/);
-  if (pathMatch && pathMatch[1]) {
-    const lockedPath = path.resolve(pathMatch[1]);
-    candidates.add(lockedPath);
-    candidates.add(path.dirname(lockedPath));
-
-    const marker = `${path.sep}win-unpacked${path.sep}`;
-    const markerIndex = lockedPath.toLowerCase().indexOf(marker.toLowerCase());
-    if (markerIndex >= 0) {
-      candidates.add(lockedPath.slice(0, markerIndex + marker.length - 1));
-    }
-  }
-
-  return Array.from(candidates)
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .map((item) => toPosixPath(item).toLowerCase());
-}
-
-async function runPowerShellJson(script, timeoutMs = 8000) {
-  return new Promise((resolve, reject) => {
-    const ps = spawn(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
-      {
-        windowsHide: true,
-      }
-    );
-
-    let stdout = "";
-    let stderr = "";
-    const timer = setTimeout(() => {
-      ps.kill();
-      reject(new Error("PowerShell unlock command timeout"));
-    }, timeoutMs);
-
-    ps.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-
-    ps.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-
-    ps.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-
-    ps.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        reject(new Error(stderr.trim() || `PowerShell exited with code ${code}`));
-        return;
-      }
-
-      const trimmed = stdout.trim();
-      if (!trimmed) {
-        resolve({});
-        return;
-      }
-
-      try {
-        resolve(JSON.parse(trimmed));
-      } catch (error) {
-        reject(new Error(`Invalid PowerShell JSON output: ${trimmed}`));
-      }
-    });
-  });
-}
-
-async function tryReleaseWindowsLocks(candidatePaths) {
-  if (process.platform !== "win32") {
-    return { attempted: false, killed: 0, processes: [] };
-  }
-
-  const targets = Array.from(new Set((candidatePaths || []).map((item) => String(item || "").trim().toLowerCase()).filter(Boolean)));
-  if (targets.length === 0) {
-    return { attempted: false, killed: 0, processes: [] };
-  }
-
-  const targetsLiteral = JSON.stringify(targets);
-  const script = `$ErrorActionPreference = 'SilentlyContinue'\n$targets = ${targetsLiteral} | ForEach-Object { $_.ToString().ToLowerInvariant() }\n$rows = New-Object System.Collections.Generic.List[object]\nGet-CimInstance Win32_Process | ForEach-Object {\n  $pid = $_.ProcessId\n  if ($pid -eq $PID) { return }\n  $exe = if ($_.ExecutablePath) { $_.ExecutablePath.ToLowerInvariant().Replace('\\','/') } else { '' }\n  $cmd = if ($_.CommandLine) { $_.CommandLine.ToLowerInvariant().Replace('\\','/') } else { '' }\n  $matched = $false\n  foreach ($t in $targets) {\n    if (($exe -and $exe.StartsWith($t)) -or ($cmd -and $cmd.Contains($t))) {\n      $matched = $true\n      break\n    }\n  }\n  if ($matched) {\n    try {\n      Stop-Process -Id $pid -Force -ErrorAction Stop\n      $rows.Add([PSCustomObject]@{ pid = $pid; name = $_.Name }) | Out-Null\n    } catch {}\n  }\n}\n[PSCustomObject]@{ attempted = $true; killed = $rows.Count; processes = $rows } | ConvertTo-Json -Compress`;
-
+async function tryUnlockAndRemove(targetPath, options = {}) {
+  // 仅重试删除；文件占用不应导致结束用户或其它应用的进程。
+  const release = { attempted: false, killed: 0, processes: [] };
   try {
-    const result = await runPowerShellJson(script, 10000);
-    const processes = Array.isArray(result.processes) ? result.processes : [];
-    return {
-      attempted: true,
-      killed: Number(result.killed || 0),
-      processes,
-    };
+    await rmWithRetry(targetPath, options, 2);
+    return { removed: true, release };
   } catch (error) {
-    return {
-      attempted: true,
-      killed: 0,
-      processes: [],
-      error: error.message,
-    };
-  }
-}
-
-async function tryUnlockAndRemove(targetPath, options = {}, errorForCandidates = null) {
-  const candidates = collectUnlockCandidates(
-    targetPath,
-    errorForCandidates && errorForCandidates.message
-  );
-  const release = await tryReleaseWindowsLocks(candidates);
-
-  if (release.killed > 0) {
-    await sleep(300);
-  }
-
-  try {
-    await rmWithRetry(targetPath, options, 5);
-    return {
-      removed: true,
-      release,
-    };
-  } catch (error) {
-    return {
-      removed: false,
-      release,
-      error,
-    };
+    return { removed: false, release, error };
   }
 }
 
 async function cleanupLegacyTempArtifacts() {
-  const tempRoot = os.tmpdir();
+  const tempRoot = CACHE_PATHS.builderTemp;
   let names = [];
   try {
     names = await fs.readdir(tempRoot);
@@ -895,6 +801,7 @@ configureLocalAppPaths();
 
 let mainWindow;
 let activeBuild = null;
+let cacheMaintenance = null;
 
 const STEP_KEYS = {
   PREPARE: "prepare",
@@ -2812,11 +2719,14 @@ async function ensureProjectDependencies(projectDir, runtime, onLog = noop, onSt
   }
 
   const installResult = await runCommandCapture(command, args, {
+    buildSession: activeBuild,
+    onLog,
     cwd: projectDir,
     windowsHide: true,
     env,
   });
 
+  assertBuildNotCanceled(activeBuild);
   if (installResult.code !== 0) {
     updateStep(onStatus, STEP_KEYS.INSTALL, "failed", "项目依赖安装失败");
     const detail = (installResult.stderr || installResult.stdout || "").trim();
@@ -2895,10 +2805,8 @@ async function prepareWorkspaceForBuild(form, onLog, onStatus = noop) {
 
   onLog("检测到纯 HTML 项目，正在自动补全 Electron 打包结构...\n");
 
-  const tempProjectDir = path.join(
-    CACHE_PATHS.builderTemp,
-    `electron-html-pack-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
-  );
+  const tempProjectDir = await fs.mkdtemp(path.join(CACHE_PATHS.builderTemp, "electron-html-pack-"));
+  try {
   const appSourceDir = path.join(tempProjectDir, "app-source");
   const appIconsDir = path.join(tempProjectDir, "app-icons");
   await fs.mkdir(appSourceDir, { recursive: true });
@@ -3008,7 +2916,10 @@ async function prepareWorkspaceForBuild(form, onLog, onStatus = noop) {
   await fs.cp(sourceDir, appSourceDir, {
     recursive: true,
     force: true,
-    filter: (src) => !shouldSkipHtmlCopyPath(sourceDir, resolvedOutputDir, src),
+    filter: (src) => {
+      assertBuildNotCanceled(activeBuild);
+      return !shouldSkipHtmlCopyPath(sourceDir, resolvedOutputDir, src);
+    },
   });
 
   onLog("纯 HTML 模式将把 app-icons 作为 extraResources（resources/app-icons）写入产物，避免 asar 图标读取回退。\n");
@@ -3051,17 +2962,46 @@ async function prepareWorkspaceForBuild(form, onLog, onStatus = noop) {
     },
     htmlOnly: true,
   };
+  } catch (error) {
+    await rmWithRetry(tempProjectDir, { recursive: true, force: true }).catch((cleanupError) => {
+      onLog(`清理未完成的临时工程失败: ${cleanupError.message}\n`);
+    });
+    throw error;
+  }
 }
 
-async function runBuild(form, onLog, onStatus = noop) {
-  if (activeBuild) {
-    throw new Error("已有打包任务在运行，请先取消或等待当前任务完成。");
+async function runBuild(form, onLog = noop, onStatus = noop) {
+  if (activeBuild || cacheMaintenance) {
+    throw new Error("已有构建或缓存清理任务在运行，请等待其完成。");
   }
-
-  if (!form.projectDir || !form.projectDir.trim()) {
+  if (!form || typeof form.projectDir !== "string" || !form.projectDir.trim()) {
     throw new Error("请先选择要打包的 Electron 项目目录。");
   }
+  const session = { child: null, canceled: false, startMs: Date.now(), cleanups: [] };
+  session.finished = new Promise((resolve) => { session.finish = resolve; });
+  activeBuild = session;
+  try {
+    return await executeBuild(form, onLog, onStatus, session);
+  } catch (error) {
+    if (session.canceled) {
+      updateOverall(onStatus, "canceled", "构建已取消");
+      updateStep(onStatus, STEP_KEYS.COMPLETE, "failed", "构建已取消");
+      return { success: false, canceled: true, code: -1, durationMs: Date.now() - session.startMs };
+    }
+    updateOverall(onStatus, "failed", "构建失败");
+    updateStep(onStatus, STEP_KEYS.COMPLETE, "failed", error.message);
+    throw error;
+  } finally {
+    for (const cleanup of session.cleanups.reverse()) {
+      try { await cleanup(); }
+      catch (error) { onLog(`清理构建资源失败: ${error.message}\n`); }
+    }
+    if (activeBuild === session) activeBuild = null;
+    session.finish();
+  }
+}
 
+async function executeBuild(form, onLog, onStatus, session) {
   // Windows 版 electron-builder 会直接调用系统 fpm。构建前检查可避免先生成
   // Windows 产物、再在 Linux deb/rpm 等阶段以难以理解的 spawn ENOENT 失败。
   assertFpmAvailableForBuild(form);
@@ -3071,6 +3011,8 @@ async function runBuild(form, onLog, onStatus = noop) {
 
   const projectDir = path.resolve(form.projectDir);
   const prepared = await prepareWorkspaceForBuild(form, onLog, onStatus);
+  session.cleanups.push(prepared.cleanup);
+  assertBuildNotCanceled(session);
   updateStep(onStatus, STEP_KEYS.PREPARE, "done", "构建参数准备完成");
   const buildProjectDir = prepared.projectDir;
   const pkg = await readProjectManifest(buildProjectDir);
@@ -3177,17 +3119,17 @@ async function runBuild(form, onLog, onStatus = noop) {
     CACHE_PATHS.builderTemp,
     `electron-builder-ui-${Date.now()}.json`
   );
+  assertBuildNotCanceled(session);
   const launcher = await resolveBuilderLauncher(runtime, onLog);
+  assertBuildNotCanceled(session);
   const restorePortableTemplate = shouldPatchPersistentPortableTemplate(normalizedForm, config)
     ? await applyPersistentPortableTemplatePatch(launcher, config, onLog)
     : async () => {};
 
-  try {
-    await fs.writeFile(tempConfigPath, JSON.stringify(config, null, 2), "utf-8");
-  } catch (error) {
-    await restorePortableTemplate();
-    throw error;
-  }
+  session.cleanups.push(restorePortableTemplate);
+  session.cleanups.push(() => rmWithRetry(tempConfigPath, { force: true }));
+  assertBuildNotCanceled(session);
+  await fs.writeFile(tempConfigPath, JSON.stringify(config, null, 2), "utf-8");
 
   const args = [
     "build",
@@ -3285,110 +3227,27 @@ async function runBuild(form, onLog, onStatus = noop) {
   );
   onLog(`已选择构建器入口: ${launcher.description}（${launcher.mode}）。\n`);
 
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      launcher.command,
-      [...launcher.prefixArgs, ...args],
-      {
-        cwd: buildProjectDir,
-        env: childEnv,
-        stdio: "pipe",
-      }
-    );
-
-    const session = {
-      child,
-      tempConfigPath,
-      cleanupProject: prepared.cleanup,
-      stepMarks: {
-        installStarted: false,
-        installCompleted: false,
-        packageStarted: false,
-        artifactStarted: false,
-      },
-      canceled: false,
-      startMs: Date.now(),
-    };
-    activeBuild = session;
-
-    async function cleanup() {
-      try {
-        await rmWithRetry(tempConfigPath, { force: true });
-      } catch (error) {
-        onLog(`清理临时配置文件失败（已忽略）: ${error.message}\n`);
-      }
-
-      try {
-        await restorePortableTemplate();
-      } catch (error) {
-        onLog(`恢复绿色版构建模板失败（已忽略）: ${error.message}\n`);
-      }
-
-      try {
-        await session.cleanupProject();
-      } catch (error) {
-        onLog(`清理临时项目目录失败（已忽略）: ${error.message}\n`);
-      }
-
-      if (activeBuild === session) {
-        activeBuild = null;
-      }
-    }
-
-    child.stdout.on("data", (chunk) => {
-      const text = chunk.toString();
-      onLog(text);
-      handleBuilderChunk(text, session.stepMarks, onStatus);
-    });
-
-    child.stderr.on("data", (chunk) => {
-      const text = chunk.toString();
-      onLog(text);
-      handleBuilderChunk(text, session.stepMarks, onStatus);
-    });
-
-    child.on("error", async (error) => {
-      await cleanup();
-      updateOverall(onStatus, "failed", "构建启动失败");
-      updateStep(onStatus, STEP_KEYS.COMPLETE, "failed", "构建失败");
-      reject(new Error(`启动打包进程失败: ${error.message}`));
-    });
-
-    child.on("close", async (code) => {
-      await cleanup();
-      const durationMs = Date.now() - session.startMs;
-
-      if (session.canceled) {
-        updateOverall(onStatus, "canceled", "构建已取消");
-        updateStep(onStatus, STEP_KEYS.COMPLETE, "failed", "构建已取消");
-        resolve({ success: false, canceled: true, code, durationMs });
-        return;
-      }
-
-      if (code === 0) {
-        if (!session.stepMarks.installCompleted) {
-          updateStep(onStatus, STEP_KEYS.INSTALL, "done", "依赖安装完成");
-        }
-        if (!session.stepMarks.packageStarted) {
-          updateStep(onStatus, STEP_KEYS.PACKAGE, "done", "应用封装完成");
-        } else {
-          updateStep(onStatus, STEP_KEYS.PACKAGE, "done", "应用封装完成");
-        }
-        updateStep(onStatus, STEP_KEYS.ARTIFACT, "done", "安装包生成完成");
-        updateStep(onStatus, STEP_KEYS.COMPLETE, "done", "构建成功");
-        updateOverall(onStatus, "success", "构建成功");
-        resolve({ success: true, code, durationMs });
-      } else {
-        updateOverall(onStatus, "failed", "构建失败");
-        updateStep(onStatus, STEP_KEYS.COMPLETE, "failed", "构建失败");
-        reject(new Error(`打包失败，退出码: ${code}`));
-      }
-    });
+  assertBuildNotCanceled(session);
+  const stepMarks = { installStarted: false, installCompleted: false, packageStarted: false, artifactStarted: false };
+  const result = await runCommandCapture(launcher.command, [...launcher.prefixArgs, ...args], {
+    cwd: buildProjectDir, env: childEnv, buildSession: session,
+    onLog: (text) => { onLog(text); handleBuilderChunk(text, stepMarks, onStatus); },
   });
+  assertBuildNotCanceled(session);
+  if (result.code !== 0) {
+    throw new Error(result.launchError ? `启动打包进程失败: ${result.launchError.message}` :
+      `打包失败，退出码: ${result.code}${result.signal ? '，信号: ' + result.signal : ''}`);
+  }
+  for (const [step, text] of [[STEP_KEYS.INSTALL, "依赖已就绪"], [STEP_KEYS.PACKAGE, "应用封装完成"],
+    [STEP_KEYS.ARTIFACT, "产物生成完成"], [STEP_KEYS.COMPLETE, "构建成功"]]) {
+    updateStep(onStatus, step, "done", text);
+  }
+  updateOverall(onStatus, "success", "构建成功");
+  return { success: true, code: 0, durationMs: Date.now() - session.startMs };
 }
 
 app.whenReady().then(() => {
-  cleanupLegacyTempArtifacts().catch(noop);
+  cacheMaintenance = cleanupLegacyTempArtifacts().catch(noop).finally(() => { cacheMaintenance = null; });
   createWindow();
 
   app.on("activate", () => {
@@ -3403,6 +3262,21 @@ app.on("window-all-closed", () => {
     app.quit();
   }
 });
+
+app.on("before-quit", (event) => {
+  if (!activeBuild) return;
+  event.preventDefault();
+  const session = activeBuild;
+  session.canceled = true;
+  terminateBuildChild(session.child).catch(noop);
+  session.finished.then(() => app.quit());
+});
+
+function sendToWindow(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload);
+  }
+}
 
 ipcMain.handle("dialog:pickProject", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -3551,28 +3425,29 @@ ipcMain.handle("project:inspect", async (_, projectDir) => {
 });
 
 ipcMain.handle("builder:cancel", async () => {
-  if (!activeBuild || !activeBuild.child) {
-    return { success: false, error: "当前没有正在运行的打包任务。" };
-  }
-
+  if (!activeBuild) return { success: false, error: "当前没有正在运行的打包任务。" };
   activeBuild.canceled = true;
-  const killed = activeBuild.child.kill();
-  if (!killed) {
-    return { success: false, error: "取消请求已发送，但进程暂未响应。" };
+  try {
+    await terminateBuildChild(activeBuild.child);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
   }
-  return { success: true };
 });
 
 ipcMain.handle("cache:clear", async () => {
-  if (activeBuild) {
-    return { success: false, error: "构建进行中，暂不能清理缓存。" };
+  if (activeBuild || cacheMaintenance) {
+    return { success: false, error: "构建或缓存清理进行中，请稍后再试。" };
   }
 
   try {
-    const result = await clearLocalCaches();
+    cacheMaintenance = clearLocalCaches();
+    const result = await cacheMaintenance;
     return { success: true, ...result };
   } catch (error) {
     return { success: false, error: error.message };
+  } finally {
+    cacheMaintenance = null;
   }
 });
 
@@ -3585,16 +3460,16 @@ ipcMain.handle("builder:run", async (_, form) => {
     const result = await runBuild(
       form,
       (line) => {
-        mainWindow.webContents.send("builder:log", line);
+        sendToWindow("builder:log", line);
       },
       (payload) => {
-        mainWindow.webContents.send("builder:status", payload);
+        sendToWindow("builder:status", payload);
       }
     );
     return { success: true, result };
   } catch (error) {
-    mainWindow.webContents.send("builder:log", `${error.message}\n`);
-    mainWindow.webContents.send("builder:status", {
+    sendToWindow("builder:log", `${error.message}\n`);
+    sendToWindow("builder:status", {
       type: "overall",
       state: "failed",
       text: error.message,
