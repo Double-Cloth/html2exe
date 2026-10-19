@@ -308,10 +308,8 @@ function appendLog(line, kind = "normal") {
   if (isLogPlaceholder(dom.logOutput.textContent)) {
     dom.logOutput.textContent = "";
   }
-  dom.logOutput.textContent += `[${stamp}] ${line}`;
-  if (!line.endsWith("\n")) {
-    dom.logOutput.textContent += "\n";
-  }
+  const text = String(line ?? "");
+  dom.logOutput.textContent = (dom.logOutput.textContent + `[${stamp}] ${text}${text.endsWith("\n") ? "" : "\n"}`).slice(-512 * 1024);
 
   if (kind === "error") {
     dom.logOutput.classList.add("status-error");
@@ -422,12 +420,24 @@ function applyStateToForm(state) {
     if (el.type === "checkbox") {
       el.checked = Boolean(state[id]);
     } else {
-      el.value = state[id] ?? "";
+      setFieldValue(el, state[id]);
     }
   }
 
   syncTargetDependentControls();
   setPresetHint((state && state.buildPreset) || "release");
+}
+
+function setFieldValue(el, value) {
+  const text = String(value ?? "");
+  // 导入配置或读取清单时，保留下拉框尚未列出的合法组合。
+  if (el.tagName === "SELECT" && !Array.from(el.options).some((option) => option.value === text)) {
+    const option = document.createElement("option");
+    option.value = text;
+    option.textContent = text || "使用项目默认值";
+    el.appendChild(option);
+  }
+  el.value = text;
 }
 
 function resetFormToDefaults(overrides = {}) {
@@ -440,7 +450,9 @@ function resetFormToDefaults(overrides = {}) {
     if (el.type === "checkbox") {
       el.checked = Boolean(el.defaultChecked);
     } else {
-      el.value = el.defaultValue ?? "";
+      el.value = el.tagName === "SELECT"
+        ? (Array.from(el.options).find((option) => option.defaultSelected) || el.options[0])?.value || ""
+        : el.defaultValue ?? "";
     }
   }
 
@@ -473,7 +485,7 @@ function applyDefaultsToForm(defaults) {
 
     const current = el.value.trim();
     if (!current && value) {
-      el.value = String(value);
+      setFieldValue(el, value);
     }
   });
 
@@ -561,97 +573,10 @@ function applyBuildPreset(presetKey, source = "manual") {
   }
 }
 
-function parseArches(raw) {
-  if (!raw) {
-    return [];
-  }
-  return raw
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function isSemverLike(version) {
-  if (!version) {
-    return true;
-  }
-  return /^\d+\.\d+\.\d+([-.][0-9A-Za-z.]+)?$/.test(version);
-}
-
-function isRuntimeVersionLike(version) {
-  if (!version) {
-    return true;
-  }
-  return /^\d+\.\d+(\.\d+)?([-.][0-9A-Za-z.]+)?$/.test(version);
-}
-
-function getInvalidArches(raw) {
-  if (!raw) {
-    return [];
-  }
-  const allowed = new Set(["x64", "arm64", "ia32", "armv7l", "universal"]);
-  return raw
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .filter((item) => !allowed.has(item));
-}
-
-function isPositiveIntLike(raw) {
-  if (!raw) {
-    return true;
-  }
-  return /^\d+$/.test(raw) && Number.parseInt(raw, 10) > 0;
-}
-
 function validateBeforeBuild(payload) {
-  if (!payload.projectDir) {
-    return "请先选择要打包的项目目录。";
-  }
-  if (!payload.targetWindows && !payload.targetLinux && !payload.targetMac) {
-    return "请至少选择一个目标平台。";
-  }
-  if (!isSemverLike(payload.version)) {
-    return "版本号格式建议为 x.y.z，例如 1.0.0。";
-  }
-  if (!isRuntimeVersionLike(payload.electronVersion)) {
-    return "Electron 版本格式无效，请使用如 44.3.0。";
-  }
-  if (!isRuntimeVersionLike(payload.chromiumVersion)) {
-    return "Chromium 版本格式无效，请使用如 152.0.7977.78。";
-  }
-  if (!isRuntimeVersionLike(payload.nodeVersion)) {
-    return "Node.js 版本格式无效，请使用如 24.21.0。";
-  }
-  const invalidArches = getInvalidArches(payload.arches);
-  if (invalidArches.length > 0) {
-    return `架构参数无效: ${invalidArches.join(", ")}。可选 x64, arm64, ia32, armv7l, universal。`;
-  }
-
-  const archList = parseArches(payload.arches);
-  if (
-    archList.includes("universal") &&
-    (payload.targetWindows || payload.targetLinux)
-  ) {
-    return "universal 仅适用于 macOS。选择 universal 时请只勾选 macOS，或改为 x64/arm64。";
-  }
-  if (payload.targetMac && (archList.includes("ia32") || archList.includes("armv7l"))) {
-    return "macOS 不支持 ia32 或 armv7l 架构，请改为 x64、arm64 或 universal。";
-  }
-  if (payload.targetWindows && archList.includes("armv7l")) {
-    return "Windows 目标不支持 armv7l，请改为 x64、arm64 或 ia32。";
-  }
-  if (payload.targetLinux && archList.includes("universal")) {
-    return "Linux 目标不支持 universal，请改为 x64、arm64 或 armv7l。";
-  }
-
-  if (!isPositiveIntLike(payload.windowWidth)) {
-    return "窗口宽度必须是正整数，例如 1280。";
-  }
-  if (!isPositiveIntLike(payload.windowHeight)) {
-    return "窗口高度必须是正整数，例如 800。";
-  }
-  return "";
+  try {
+    return window.builderConfig.validateBuildForm(window.builderConfig.normalizeSettingsRecord(payload));
+  } catch (error) { return error.message; }
 }
 
 function updateBuildState(next) {
@@ -691,6 +616,8 @@ function setFormBusy(busy) {
   if (dom.goOutputPageBtn) {
     dom.goOutputPageBtn.disabled = busy;
   }
+  if (dom.goConfigPageBtn) dom.goConfigPageBtn.disabled = busy;
+  if (!busy) syncTargetDependentControls();
   updateBuildState(busy);
 }
 
@@ -754,7 +681,8 @@ async function saveConfig() {
   setButtonBusy(dom.saveConfigBtn, true, "保存中...", "保存配置");
   setActionFeedback("正在保存配置...", "pending");
   try {
-    await window.builderApi.saveSettings(payload);
+    const result = await window.builderApi.saveSettings(payload);
+    if (!result?.success) throw new Error(result?.error || "保存配置失败。");
     setActionFeedback("配置已保存。", "success", 1800);
     appendLog("配置已保存。", "ok");
   } finally {
@@ -801,7 +729,7 @@ async function importConfig() {
       return;
     }
 
-    resetFormToDefaults(result.settings);
+    resetFormToDefaults({ ...result.defaults, ...result.settings });
     const saveResult = await window.builderApi.saveSettings(gatherFormState());
     if (!saveResult?.success) {
       throw new Error("配置已读取，但保存到本地失败。");
@@ -893,30 +821,35 @@ async function runBuild() {
     return;
   }
 
-  let payload = gatherFormState();
-  if (!payload.projectDir) {
-    const saved = await window.builderApi.loadSettings();
-    payload = { ...saved };
-  }
-  const invalidMessage = validateBeforeBuild(payload);
-  if (invalidMessage) {
-    setActionFeedback(invalidMessage, "error", 2800);
-    appendLog(invalidMessage, "error");
-    return;
-  }
-
-  setActionFeedback("已开始打包，请关注下方构建进度与日志。", "pending");
-  setButtonBusy(dom.buildBtn, true, "打包中...", "开始打包");
-  appendLog("准备开始打包...\n");
-  resetProgressView();
-  setOverallStatus("running", "构建进行中");
+  // 在首次异步读取之前锁定按钮，避免快速连击启动多个 IPC 请求。
   setFormBusy(true);
+  let payload;
+  let buildAttempted = false;
   try {
+    payload = gatherFormState();
+    if (!payload.projectDir) {
+      const saved = await window.builderApi.loadSettings();
+      payload = { ...saved };
+    }
+    const invalidMessage = validateBeforeBuild(payload);
+    if (invalidMessage) {
+      setActionFeedback(invalidMessage, "error", 2800);
+      appendLog(invalidMessage, "error");
+      return;
+    }
+
+    setActionFeedback("已开始打包，请关注下方构建进度与日志。", "pending");
+    setButtonBusy(dom.buildBtn, true, "打包中...", "开始打包");
+    appendLog("准备开始打包...\n");
+    resetProgressView();
+    setOverallStatus("running", "构建进行中");
+    setFormBusy(true);
     const saveResult = await window.builderApi.saveSettings(payload);
     if (!saveResult?.success) {
       appendLog("保存配置失败，仍继续尝试打包。", "error");
     }
 
+    buildAttempted = true;
     const result = await window.builderApi.runBuild(payload);
     if (result?.success && result?.result?.success) {
       const sec = Math.round((result.result.durationMs || 0) / 1000);
@@ -938,7 +871,7 @@ async function runBuild() {
     setOverallStatus("failed", "构建失败");
   } finally {
     try {
-      await clearRuntimeOverridesIfNeeded(payload);
+      if (buildAttempted) await clearRuntimeOverridesIfNeeded(payload);
     } catch (error) {
       appendLog(`自动清空高级版本字段异常: ${error.message}`, "error");
     }
@@ -967,6 +900,7 @@ async function cancelBuild() {
     }
   } finally {
     setButtonBusy(dom.cancelBuildBtn, false);
+    if (dom.cancelBuildBtn) dom.cancelBuildBtn.disabled = !isBuilding;
   }
 }
 
@@ -1061,31 +995,31 @@ async function init() {
         loadProjectDefaults().catch((error) => {
           appendLog(`读取项目信息失败: ${error.message}`, "error");
         });
-      });
+      }).catch((error) => setActionFeedback(`选择目录失败: ${error.message}`, "error"));
     });
   }
 
   if (dom.pickOutputBtn) {
     dom.pickOutputBtn.addEventListener("click", () => {
-      pickDirectory("outputDir", window.builderApi.pickOutputDir);
+      pickDirectory("outputDir", window.builderApi.pickOutputDir).catch((error) => setActionFeedback(`选择目录失败: ${error.message}`, "error"));
     });
   }
 
   if (dom.pickWinIconBtn) {
     dom.pickWinIconBtn.addEventListener("click", () => {
-      pickIcon("winIcon", ["ico", "png"]);
+      pickIcon("winIcon", ["ico", "png"]).catch((error) => setActionFeedback(`选择图标失败: ${error.message}`, "error"));
     });
   }
 
   if (dom.pickLinuxIconBtn) {
     dom.pickLinuxIconBtn.addEventListener("click", () => {
-      pickIcon("linuxIcon", ["png", "svg"]);
+      pickIcon("linuxIcon", ["png", "svg"]).catch((error) => setActionFeedback(`选择图标失败: ${error.message}`, "error"));
     });
   }
 
   if (dom.pickMacIconBtn) {
     dom.pickMacIconBtn.addEventListener("click", () => {
-      pickIcon("macIcon", ["icns", "png"]);
+      pickIcon("macIcon", ["icns", "png"]).catch((error) => setActionFeedback(`选择图标失败: ${error.message}`, "error"));
     });
   }
 
@@ -1254,7 +1188,7 @@ async function init() {
     dom.clearLogBtn.addEventListener("click", () => {
       dom.logOutput.textContent = "等待开始...";
       dom.logOutput.classList.remove("status-error", "status-ok");
-      resetProgressView();
+      if (!isBuilding) resetProgressView();
       setActionFeedback("日志已清空。", "success", 1400);
     });
   }
@@ -1264,10 +1198,10 @@ async function init() {
       try {
         await saveConfig();
       } catch (error) {
-        appendLog(`自动保存失败: ${error.message}`, "error");
-      } finally {
-        window.location.href = "./output.html";
+        setActionFeedback(`自动保存失败: ${error.message}`, "error");
+        return;
       }
+      window.location.href = "./output.html";
     });
   }
 

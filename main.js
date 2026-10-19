@@ -18,7 +18,9 @@ const fs = require("node:fs/promises");
 const fssync = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
+const { pathToFileURL } = require("node:url");
 const { spawn, spawnSync } = require("node:child_process");
+const { normalizeSettingsRecord, validateBuildForm } = require("./src/config");
 
 const SETTINGS_FILE_NAME = "builder-settings.json";
 const SETTINGS_EXPORT_FORMAT = "html2exe.settings";
@@ -1108,7 +1110,7 @@ async function fetchJsonWithTimeout(url, timeoutMs = RUNTIME_VERSION_REQUEST_TIM
     if (!response.ok) {
       throw new Error(`版本服务返回 HTTP ${response.status}。`);
     }
-    return response.json();
+    return await response.json();
   } finally {
     clearTimeout(timeout);
   }
@@ -1194,7 +1196,7 @@ async function findFirstHtmlFile(rootDir) {
 
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        if (["node_modules", ".git", "release", "dist"].includes(entry.name)) {
+        if (shouldSkipHtmlCopyPath(rootDir, "", path.join(absDir, entry.name))) {
           continue;
         }
         queue.push(path.join(relativeDir, entry.name));
@@ -1232,16 +1234,37 @@ async function readSettings() {
   const settingsPath = getSettingsPath();
   try {
     const content = await fs.readFile(settingsPath, "utf-8");
-    return JSON.parse(content);
+    return normalizeSettingsRecord(JSON.parse(content));
   } catch (error) {
     return {};
   }
 }
 
-async function writeSettings(settings) {
-  const settingsPath = getSettingsPath();
-  await fs.mkdir(path.dirname(settingsPath), { recursive: true });
-  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
+let settingsWriteQueue = Promise.resolve();
+
+function updateSettings(mutator) {
+  const operation = settingsWriteQueue.then(async () => {
+    const current = await readSettings();
+    const settings = mutator(current);
+    const settingsPath = getSettingsPath();
+    if (settings === null) { await fs.rm(settingsPath, { force: true }); return; }
+    const content = JSON.stringify(normalizeSettingsRecord(settings), null, 2);
+    if (Buffer.byteLength(content, "utf8") > SETTINGS_IMPORT_MAX_BYTES) throw new Error("配置文件过大，最大支持 1 MB。");
+    await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+    const tempPath = settingsPath + ".tmp";
+    try {
+      await fs.writeFile(tempPath, content, "utf8");
+      await fs.rename(tempPath, settingsPath);
+    } finally {
+      await fs.rm(tempPath, { force: true }).catch(noop);
+    }
+  });
+  settingsWriteQueue = operation.catch(noop);
+  return operation;
+}
+
+function writeSettings(settings) {
+  return updateSettings(() => settings);
 }
 
 function resolveDefaultWindowsIconPath() {
@@ -1272,29 +1295,6 @@ function resolveDefaultWindowsIconPath() {
   return cachedDefaultWindowsIconPath;
 }
 
-function normalizeSettingsRecord(settings) {
-  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
-    throw new Error("配置内容必须是 JSON 对象。");
-  }
-
-  const normalized = {};
-  for (const [key, value] of Object.entries(settings)) {
-    const valueType = typeof value;
-    const isSupported =
-      value === null ||
-      valueType === "string" ||
-      valueType === "boolean" ||
-      (valueType === "number" && Number.isFinite(value));
-
-    if (!isSupported) {
-      throw new Error(`配置项“${key}”的值类型不受支持。`);
-    }
-    normalized[key] = value;
-  }
-
-  return normalized;
-}
-
 function createSettingsExport(settings) {
   return {
     format: SETTINGS_EXPORT_FORMAT,
@@ -1311,7 +1311,7 @@ function parseSettingsExport(content) {
 
   let parsed;
   try {
-    parsed = JSON.parse(content);
+    parsed = JSON.parse(content.replace(/^\uFEFF/, ""));
   } catch (error) {
     throw new Error("配置文件不是有效的 JSON。");
   }
@@ -1341,8 +1341,31 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
-
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (!isTrustedPageUrl(url)) event.preventDefault();
+  });
+  mainWindow.webContents.on("will-attach-webview", (event) => event.preventDefault());
+  mainWindow.on("closed", () => { mainWindow = null; });
   mainWindow.loadFile(path.join(__dirname, "src", "index.html"));
+}
+
+function isTrustedPageUrl(url) {
+  return ["index.html", "output.html"].some((name) => url === pathToFileURL(path.join(__dirname, "src", name)).href);
+}
+
+function validateIpcSender(event) {
+  if (!mainWindow || event.sender !== mainWindow.webContents ||
+      event.senderFrame !== event.sender.mainFrame || !isTrustedPageUrl(event.senderFrame.url)) {
+    throw new Error("拒绝来自非应用页面的请求。");
+  }
+}
+
+function registerIpcHandler(channel, handler) {
+  ipcMain.handle(channel, (event, ...args) => {
+    validateIpcSender(event);
+    return handler(event, ...args);
+  });
 }
 
 function parseCommaList(raw) {
@@ -1395,13 +1418,16 @@ function parseLineItems(raw) {
       return "";
     }
 
-    if (normalized.startsWith("{") || normalized.startsWith("[")) {
+    if (normalized.startsWith("{")) {
       try {
-        return JSON.parse(normalized);
+        const item = JSON.parse(normalized);
+        if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("资源规则必须是对象。");
+        return item;
       } catch (error) {
-        return normalized;
+        throw new Error(`资源规则 JSON 无效: ${normalized}（${error.message}）`);
       }
     }
+    if (normalized.startsWith("[")) throw new Error("资源规则不支持嵌套数组，请每行填写一条规则。");
 
     return normalized;
   }).filter(Boolean);
@@ -1422,11 +1448,10 @@ function toPosixLowerPath(inputPath) {
 
 function isPathInside(parentPath, childPath) {
   const relativePath = path.relative(parentPath, childPath);
-  return Boolean(relativePath) && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
+  return Boolean(relativePath) && relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`) && !path.isAbsolute(relativePath);
 }
 
 function shouldSkipHtmlCopyPath(sourceDir, outputDir, currentPath) {
-  const normalizedCurrent = toPosixLowerPath(currentPath);
   const relativePath = path.relative(sourceDir, currentPath);
 
   if (!relativePath || relativePath === ".") {
@@ -1438,27 +1463,11 @@ function shouldSkipHtmlCopyPath(sourceDir, outputDir, currentPath) {
     .map((segment) => String(segment || "").toLowerCase())
     .filter(Boolean);
 
-  if (normalizedSegments.includes("node_modules") || normalizedSegments.includes(".git")) {
+  if (normalizedSegments.some((segment) => ["node_modules", ".git", ".cache", "win-unpacked", "app.asar.unpacked", "release", "dist", "out"].includes(segment))) {
     return true;
   }
 
-  if (normalizedCurrent.includes("/win-unpacked/") || normalizedCurrent.endsWith("/win-unpacked")) {
-    return true;
-  }
-  if (normalizedCurrent.includes("/app.asar.unpacked/") || normalizedCurrent.endsWith("/app.asar.unpacked")) {
-    return true;
-  }
-  if (normalizedCurrent.includes("/release/") || normalizedCurrent.endsWith("/release")) {
-    return true;
-  }
-  if (normalizedCurrent.includes("/dist/") || normalizedCurrent.endsWith("/dist")) {
-    return true;
-  }
-  if (normalizedCurrent.includes("/out/") || normalizedCurrent.endsWith("/out")) {
-    return true;
-  }
-
-  if (isPathInside(sourceDir, outputDir)) {
+  if (outputDir && isPathInside(sourceDir, outputDir)) {
     const outputRelative = path.relative(sourceDir, outputDir);
     const outputSegments = outputRelative
       .split(path.sep)
@@ -1487,14 +1496,38 @@ function normalizeHtmlOnlyFilesGlobs(raw) {
     "!**/win-unpacked/**",
     "!**/app.asar.unpacked/**",
   ];
-  const userLines = parseLines(raw).filter((line) => !line.startsWith("!"));
+  const userLines = parseLines(raw).map((line) => line.startsWith("!")
+    ? `!app-source/${line.slice(1)}` : `app-source/${line}`);
 
   if (userLines.length === 0) {
     return required.join("\n");
   }
 
-  // Keep user positive rules but always include essential runtime files.
-  return uniqueLines([...userLines, ...required]).join("\n");
+  // 规则以原始 HTML 目录为基准；排除项放在包含项之后，避免被重新包含。
+  return uniqueLines([...required, ...userLines.filter((line) => !line.startsWith("!")), ...userLines.filter((line) => line.startsWith("!"))]).join("\n");
+}
+
+async function resolvePhysicalPath(targetPath) {
+  try { return await fs.realpath(targetPath); }
+  catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    const parent = path.dirname(targetPath);
+    if (parent === targetPath) throw error;
+    return path.join(await resolvePhysicalPath(parent), path.basename(targetPath));
+  }
+}
+
+async function validateBuildDirectories(form) {
+  const sourceDir = path.resolve(form.projectDir);
+  const stat = await fs.stat(sourceDir);
+  if (!stat.isDirectory()) throw new Error("项目路径必须是目录。");
+  const outputDir = path.resolve(sourceDir, form.outputDir || "release");
+  const source = await resolvePhysicalPath(sourceDir);
+  const output = await resolvePhysicalPath(outputDir);
+  if (source === output || isPathInside(output, source)) {
+    throw new Error("输出目录不能是项目目录本身或其上级目录，请选择独立的子目录。");
+  }
+  return outputDir;
 }
 
 function resolveLocalElectronVersion() {
@@ -2173,6 +2206,15 @@ async function inspectProjectDefaults(projectDirInput) {
       outputDir:
         (build.directories && build.directories.output) || "release",
       electronVersion,
+      compression: build.compression || "normal",
+      asar: build.asar !== false,
+      npmRebuild: build.npmRebuild !== false,
+      nsisOneClick: build.nsis?.oneClick !== false,
+      nsisPerMachine: Boolean(build.nsis?.perMachine),
+      nsisAllowElevation: build.nsis?.allowElevation !== false,
+      nsisAllowChangeDir: Boolean(build.nsis?.allowToChangeInstallationDirectory),
+      linuxCategory: build.linux?.category || "",
+      macCategory: build.mac?.category || "",
       chromiumVersion: "",
       nodeVersion: "",
       winTargets: winTargetNames
@@ -2210,9 +2252,9 @@ async function inspectProjectDefaults(projectDirInput) {
       windowResizable: true,
       windowFullscreenable: true,
       windowAlwaysOnTop: false,
-      winIcon: resolveDefaultWindowsIconPath(),
-      linuxIcon: resolveDefaultProjectIconPath(),
-      macIcon: resolveDefaultMacIconPath(),
+      winIcon: resolveIconPathAgainstProject(build.win?.icon || build.icon || "", projectDir) || resolveDefaultWindowsIconPath(),
+      linuxIcon: resolveIconPathAgainstProject(build.linux?.icon || build.icon || "", projectDir) || resolveDefaultProjectIconPath(),
+      macIcon: resolveIconPathAgainstProject(build.mac?.icon || "", projectDir) || resolveDefaultMacIconPath(),
     },
     mode: "electron-project",
   };
@@ -2341,6 +2383,17 @@ function buildTargetConfig(form) {
   return config;
 }
 
+function mergeBuildConfig(base, overrides) {
+  const result = { ...base };
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) continue;
+    result[key] = value && typeof value === "object" && !Array.isArray(value)
+      ? mergeBuildConfig(base && typeof base[key] === "object" && !Array.isArray(base[key]) ? base[key] : {}, value)
+      : value;
+  }
+  return result;
+}
+
 function isSelfBuildProject(projectDir) {
   try {
     const pkgPath = path.join(projectDir, "package.json");
@@ -2382,16 +2435,7 @@ function injectSelfBuildToolchainResources(projectDir, config) {
 }
 
 function normalizeBuildForm(form, onLog = noop) {
-  const normalized = { ...form };
-
-  // Windows target paths in electron-builder may require app.asar integrity info.
-  // Keep asar enabled to avoid ENOENT on win-unpacked/resources/app.asar.
-  if (normalized.targetWindows && !normalized.asar) {
-    normalized.asar = true;
-    onLog("检测到 Windows 打包，已自动开启 asar 以避免 app.asar 缺失导致构建失败。\n");
-  }
-
-  return normalized;
+  return { ...form };
 }
 
 function sanitizeIconInput(iconPath) {
@@ -2807,161 +2851,164 @@ async function prepareWorkspaceForBuild(form, onLog, onStatus = noop) {
 
   const tempProjectDir = await fs.mkdtemp(path.join(CACHE_PATHS.builderTemp, "electron-html-pack-"));
   try {
-  const appSourceDir = path.join(tempProjectDir, "app-source");
-  const appIconsDir = path.join(tempProjectDir, "app-icons");
-  await fs.mkdir(appSourceDir, { recursive: true });
-  await fs.mkdir(appIconsDir, { recursive: true });
+    const appSourceDir = path.join(tempProjectDir, "app-source");
+    const appIconsDir = path.join(tempProjectDir, "app-icons");
+    await fs.mkdir(appSourceDir, { recursive: true });
+    await fs.mkdir(appIconsDir, { recursive: true });
 
-  const runtimeIconRelative = {
-    win32: "",
-    linux: "",
-    darwin: "",
-  };
+    const runtimeIconRelative = {
+      win32: "",
+      linux: "",
+      darwin: "",
+    };
 
-  const htmlOnlyBuildIcons = {
-    winIcon: "",
-    linuxIcon: "",
-    macIcon: "",
-  };
+    const htmlOnlyBuildIcons = {
+      winIcon: "",
+      linuxIcon: "",
+      macIcon: "",
+    };
 
-  const runtimeIconCandidates = [
-    ["win32", form.winIcon],
-    ["linux", form.linuxIcon],
-    ["darwin", form.macIcon],
-  ];
+    const runtimeIconCandidates = [
+      ["win32", form.winIcon],
+      ["linux", form.linuxIcon],
+      ["darwin", form.macIcon],
+    ];
 
-  for (const [platformKey, iconInput] of runtimeIconCandidates) {
-    const resolvedIconPath = resolveIconPathAgainstProject(iconInput || "", sourceDir);
-    if (!resolvedIconPath || !(await pathExists(resolvedIconPath))) {
-      continue;
-    }
-
-    const iconExt = path.extname(resolvedIconPath) || ".png";
-    const targetBaseName = `icon-${platformKey}${iconExt}`;
-    const targetPath = path.join(appIconsDir, targetBaseName);
-
-    try {
-      await fs.copyFile(resolvedIconPath, targetPath);
-      runtimeIconRelative[platformKey] = path.join("app-icons", targetBaseName).replace(/\\/g, "/");
-      if (platformKey === "win32") {
-        htmlOnlyBuildIcons.winIcon = targetPath;
-      } else if (platformKey === "linux") {
-        htmlOnlyBuildIcons.linuxIcon = targetPath;
-      } else if (platformKey === "darwin") {
-        htmlOnlyBuildIcons.macIcon = targetPath;
+    for (const [platformKey, iconInput] of runtimeIconCandidates) {
+      const resolvedIconPath = resolveIconPathAgainstProject(iconInput || "", sourceDir);
+      if (!resolvedIconPath || !(await pathExists(resolvedIconPath))) {
+        continue;
       }
-      onLog(`纯 HTML 模式已写入运行时图标(${platformKey}): ${targetPath}\n`);
-    } catch (error) {
-      const detail = error && error.message ? error.message : String(error || "未知错误");
-      onLog(`警告: 复制纯 HTML 运行时图标失败(${platformKey}): ${detail}\n`);
+
+      const iconExt = path.extname(resolvedIconPath) || ".png";
+      const targetBaseName = `icon-${platformKey}${iconExt}`;
+      const targetPath = path.join(appIconsDir, targetBaseName);
+
+      try {
+        await fs.copyFile(resolvedIconPath, targetPath);
+        runtimeIconRelative[platformKey] = path.join("app-icons", targetBaseName).replace(/\\/g, "/");
+        if (platformKey === "win32") {
+          htmlOnlyBuildIcons.winIcon = targetPath;
+        } else if (platformKey === "linux") {
+          htmlOnlyBuildIcons.linuxIcon = targetPath;
+        } else if (platformKey === "darwin") {
+          htmlOnlyBuildIcons.macIcon = targetPath;
+        }
+        onLog(`纯 HTML 模式已写入运行时图标(${platformKey}): ${targetPath}\n`);
+      } catch (error) {
+        const detail = error && error.message ? error.message : String(error || "未知错误");
+        onLog(`警告: 复制纯 HTML 运行时图标失败(${platformKey}): ${detail}\n`);
+      }
     }
-  }
 
-  const requiredRuntimeIconChecks = [
-    ["win32", form.winIcon, htmlOnlyBuildIcons.winIcon],
-    ["linux", form.linuxIcon, htmlOnlyBuildIcons.linuxIcon],
-    ["darwin", form.macIcon, htmlOnlyBuildIcons.macIcon],
-  ];
+    const requiredRuntimeIconChecks = [
+      ["win32", form.winIcon, htmlOnlyBuildIcons.winIcon],
+      ["linux", form.linuxIcon, htmlOnlyBuildIcons.linuxIcon],
+      ["darwin", form.macIcon, htmlOnlyBuildIcons.macIcon],
+    ];
 
-  for (const [platformKey, configuredIcon, copiedIcon] of requiredRuntimeIconChecks) {
-    const configured = String(configuredIcon || "").trim();
-    if (configured && !copiedIcon) {
-      throw new Error(`纯 HTML 模式复制图标失败(${platformKey})，已阻止继续打包以避免回退默认图标: ${configured}`);
+    for (const [platformKey, configuredIcon, copiedIcon] of requiredRuntimeIconChecks) {
+      const configured = String(configuredIcon || "").trim();
+      if (configured && !copiedIcon) {
+        throw new Error(`纯 HTML 模式复制图标失败(${platformKey})，已阻止继续打包以避免回退默认图标: ${configured}`);
+      }
     }
-  }
 
-  const windowOptions = getGeneratedWindowOptions(form);
-  const mainJs = `const { app, BrowserWindow } = require("electron");\nconst fs = require("node:fs");\nconst path = require("node:path");\n\nconst WINDOW_OPTIONS = ${JSON.stringify(
-    windowOptions,
-    null,
-    2
-  )};\nconst WINDOW_ICON_RELATIVE = ${JSON.stringify(runtimeIconRelative, null, 2)};\n\nfunction resolveWindowIcon() {\n  const relativeIcon = WINDOW_ICON_RELATIVE[process.platform] || "";\n  if (!relativeIcon) {\n    return undefined;\n  }\n\n  const candidatePaths = [\n    path.join(process.resourcesPath || "", relativeIcon),\n    path.join(__dirname, relativeIcon),\n  ];\n\n  const absPath = candidatePaths.find((candidate) => candidate && fs.existsSync(candidate));\n  return absPath || undefined;\n}\n\nfunction createWindow() {\n  const { showMenuBar, ...browserWindowOptions } = WINDOW_OPTIONS;\n  const win = new BrowserWindow({\n    ...browserWindowOptions,\n    icon: resolveWindowIcon(),\n  });\n  win.setMenuBarVisibility(Boolean(showMenuBar));\n  win.loadFile(path.join(__dirname, "app-source", ${JSON.stringify(
-    htmlEntry
-  )}));\n}\n\napp.whenReady().then(createWindow);\napp.on("window-all-closed", () => {\n  if (process.platform !== "darwin") app.quit();\n});\n`;
+    const windowOptions = getGeneratedWindowOptions(form);
+    const mainJs = `const { app, BrowserWindow } = require("electron");\nconst fs = require("node:fs");\nconst path = require("node:path");\n\nconst WINDOW_OPTIONS = ${JSON.stringify(
+      windowOptions,
+      null,
+      2
+    )};\nconst WINDOW_ICON_RELATIVE = ${JSON.stringify(runtimeIconRelative, null, 2)};\n\nfunction resolveWindowIcon() {\n  const relativeIcon = WINDOW_ICON_RELATIVE[process.platform] || "";\n  if (!relativeIcon) {\n    return undefined;\n  }\n\n  const candidatePaths = [\n    path.join(process.resourcesPath || "", relativeIcon),\n    path.join(__dirname, relativeIcon),\n  ];\n\n  const absPath = candidatePaths.find((candidate) => candidate && fs.existsSync(candidate));\n  return absPath || undefined;\n}\n\nfunction createWindow() {\n  const { showMenuBar, ...browserWindowOptions } = WINDOW_OPTIONS;\n  const win = new BrowserWindow({\n    ...browserWindowOptions,\n    icon: resolveWindowIcon(),\n    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },\n  });\n  win.setMenuBarVisibility(Boolean(showMenuBar));\n  win.loadFile(path.join(__dirname, "app-source", ${JSON.stringify(
+      htmlEntry
+    )}));\n}\n\napp.whenReady().then(() => {\n  createWindow();\n  app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });\n});\napp.on("window-all-closed", () => {\n  if (process.platform !== "darwin") app.quit();\n});\n`;
 
-  const fallbackName = sanitizeName(path.basename(sourceDir));
-  const fixedElectronVersion = resolveLocalElectronVersion();
-  const requestedElectronVersion = normalizeVersionInput(form.electronVersion) || fixedElectronVersion;
-  const packageJson = {
-    name: fallbackName,
-    version: form.version || "1.0.0",
-    description: form.description || "Auto generated from html directory",
-    author: toAuthorMetadata(form.author, form.authorEmail) || "",
-    homepage: form.homepage || undefined,
-    main: "main.js",
-    private: true,
-    devDependencies: {
-      electron: requestedElectronVersion,
-    },
-  };
+    const fallbackName = sanitizeName(path.basename(sourceDir));
+    const fixedElectronVersion = resolveLocalElectronVersion();
+    const requestedElectronVersion = normalizeVersionInput(form.electronVersion) || fixedElectronVersion;
+    const packageJson = {
+      name: fallbackName,
+      version: form.version || "1.0.0",
+      description: form.description || "Auto generated from html directory",
+      author: toAuthorMetadata(form.author, form.authorEmail) || "",
+      homepage: form.homepage || undefined,
+      main: "main.js",
+      private: true,
+      devDependencies: {
+        electron: requestedElectronVersion,
+      },
+    };
 
-  await fs.writeFile(path.join(tempProjectDir, "main.js"), mainJs, "utf-8");
-  await fs.writeFile(
-    path.join(tempProjectDir, "package.json"),
-    JSON.stringify(packageJson, null, 2),
-    "utf-8"
-  );
-
-  onLog(`已自动补全临时项目: ${tempProjectDir}\n`);
-  onLog("纯 HTML 模式将强制包含 main.js/package.json/app-source 以保证可运行。\n");
-  updateStep(onStatus, STEP_KEYS.TEMP_PROJECT, "done", "临时项目创建完成");
-
-  const normalizedFilesGlobs = normalizeHtmlOnlyFilesGlobs(form.filesGlobs);
-  const requestedOutputDir = (form.outputDir || "release").trim() || "release";
-  const resolvedOutputDir = path.isAbsolute(requestedOutputDir)
-    ? requestedOutputDir
-    : path.resolve(sourceDir, requestedOutputDir);
-  onLog(`纯 HTML 模式产物输出目录: ${resolvedOutputDir}\n`);
-
-  await fs.cp(sourceDir, appSourceDir, {
-    recursive: true,
-    force: true,
-    filter: (src) => {
-      assertBuildNotCanceled(activeBuild);
-      return !shouldSkipHtmlCopyPath(sourceDir, resolvedOutputDir, src);
-    },
-  });
-
-  onLog("纯 HTML 模式将把 app-icons 作为 extraResources（resources/app-icons）写入产物，避免 asar 图标读取回退。\n");
-  if (htmlOnlyBuildIcons.winIcon || htmlOnlyBuildIcons.linuxIcon || htmlOnlyBuildIcons.macIcon) {
-    onLog(
-      `纯 HTML 模式已改写构建图标路径: win=${htmlOnlyBuildIcons.winIcon || "(空)"}, linux=${htmlOnlyBuildIcons.linuxIcon || "(空)"}, mac=${htmlOnlyBuildIcons.macIcon || "(空)"}\n`
+    await fs.writeFile(path.join(tempProjectDir, "main.js"), mainJs, "utf-8");
+    await fs.writeFile(
+      path.join(tempProjectDir, "package.json"),
+      JSON.stringify(packageJson, null, 2),
+      "utf-8"
     );
-  }
 
-  const htmlOnlyExtraResources = parseLineItems(form.extraResources);
-  const hasAppIconsResource = htmlOnlyExtraResources.some((item) => {
-    if (!item || typeof item !== "object") {
-      return false;
+    onLog(`已自动补全临时项目: ${tempProjectDir}\n`);
+    onLog("纯 HTML 模式将强制包含 main.js/package.json/app-source 以保证可运行。\n");
+    updateStep(onStatus, STEP_KEYS.TEMP_PROJECT, "done", "临时项目创建完成");
+
+    const normalizedFilesGlobs = normalizeHtmlOnlyFilesGlobs(form.filesGlobs);
+    const requestedOutputDir = (form.outputDir || "release").trim() || "release";
+    const resolvedOutputDir = path.isAbsolute(requestedOutputDir)
+      ? requestedOutputDir
+      : path.resolve(sourceDir, requestedOutputDir);
+    onLog(`纯 HTML 模式产物输出目录: ${resolvedOutputDir}\n`);
+
+    await fs.cp(sourceDir, appSourceDir, {
+      recursive: true,
+      force: true,
+      filter: (src) => {
+        assertBuildNotCanceled(activeBuild);
+        return !shouldSkipHtmlCopyPath(sourceDir, resolvedOutputDir, src);
+      },
+    });
+
+    onLog("纯 HTML 模式将把 app-icons 作为 extraResources（resources/app-icons）写入产物，避免 asar 图标读取回退。\n");
+    if (htmlOnlyBuildIcons.winIcon || htmlOnlyBuildIcons.linuxIcon || htmlOnlyBuildIcons.macIcon) {
+      onLog(
+        `纯 HTML 模式已改写构建图标路径: win=${htmlOnlyBuildIcons.winIcon || "(空)"}, linux=${htmlOnlyBuildIcons.linuxIcon || "(空)"}, mac=${htmlOnlyBuildIcons.macIcon || "(空)"}\n`
+      );
     }
 
-    return item.from === "app-icons" && item.to === "app-icons";
-  });
+    const htmlOnlyExtraResources = parseLineItems(form.extraResources).map((item) => {
+      if (typeof item === "string") return { from: sourceDir, to: ".", filter: [item] };
+      return { ...item, from: path.resolve(sourceDir, item.from || ".") };
+    });
+    const hasAppIconsResource = htmlOnlyExtraResources.some((item) => {
+      if (!item || typeof item !== "object") {
+        return false;
+      }
 
-  if (!hasAppIconsResource) {
-    htmlOnlyExtraResources.push({ from: "app-icons", to: "app-icons" });
-  }
+      return item.from === "app-icons" && item.to === "app-icons";
+    });
 
-  return {
-    projectDir: tempProjectDir,
-    cleanup: async () => {
-      await rmWithRetry(tempProjectDir, { recursive: true, force: true });
-    },
-    normalizedForm: {
-      ...form,
-      outputDir: resolvedOutputDir,
-      filesGlobs: normalizedFilesGlobs,
-      extraResources: stringifyBuildArrayForForm(htmlOnlyExtraResources),
-      winIcon: htmlOnlyBuildIcons.winIcon || form.winIcon,
-      linuxIcon: htmlOnlyBuildIcons.linuxIcon || form.linuxIcon,
-      macIcon: htmlOnlyBuildIcons.macIcon || form.macIcon,
-      asar: true,
-      asarUnpack: form.asarUnpack || "",
-      npmRebuild: false,
-      electronVersion: requestedElectronVersion,
-    },
-    htmlOnly: true,
-  };
+    if (!hasAppIconsResource) {
+      htmlOnlyExtraResources.push({ from: "app-icons", to: "app-icons" });
+    }
+
+    return {
+      projectDir: tempProjectDir,
+      cleanup: async () => {
+        await rmWithRetry(tempProjectDir, { recursive: true, force: true });
+      },
+      normalizedForm: {
+        ...form,
+        outputDir: resolvedOutputDir,
+        filesGlobs: normalizedFilesGlobs,
+        extraResources: stringifyBuildArrayForForm(htmlOnlyExtraResources),
+        winIcon: htmlOnlyBuildIcons.winIcon || form.winIcon,
+        linuxIcon: htmlOnlyBuildIcons.linuxIcon || form.linuxIcon,
+        macIcon: htmlOnlyBuildIcons.macIcon || form.macIcon,
+        asar: form.asar !== false,
+        asarUnpack: form.asarUnpack || "",
+        npmRebuild: false,
+        electronVersion: requestedElectronVersion,
+      },
+      htmlOnly: true,
+    };
   } catch (error) {
     await rmWithRetry(tempProjectDir, { recursive: true, force: true }).catch((cleanupError) => {
       onLog(`清理未完成的临时工程失败: ${cleanupError.message}\n`);
@@ -2977,6 +3024,9 @@ async function runBuild(form, onLog = noop, onStatus = noop) {
   if (!form || typeof form.projectDir !== "string" || !form.projectDir.trim()) {
     throw new Error("请先选择要打包的 Electron 项目目录。");
   }
+  form = normalizeSettingsRecord(form);
+  const invalid = validateBuildForm(form);
+  if (invalid) throw new Error(invalid);
   const session = { child: null, canceled: false, startMs: Date.now(), cleanups: [] };
   session.finished = new Promise((resolve) => { session.finish = resolve; });
   activeBuild = session;
@@ -3002,6 +3052,9 @@ async function runBuild(form, onLog = noop, onStatus = noop) {
 }
 
 async function executeBuild(form, onLog, onStatus, session) {
+  const outputDir = await validateBuildDirectories(form);
+  form = { ...form, outputDir };
+  assertBuildNotCanceled(session);
   // Windows 版 electron-builder 会直接调用系统 fpm。构建前检查可避免先生成
   // Windows 产物、再在 Linux deb/rpm 等阶段以难以理解的 spawn ENOENT 失败。
   assertFpmAvailableForBuild(form);
@@ -3023,12 +3076,13 @@ async function executeBuild(form, onLog, onStatus, session) {
   let normalizedForm = normalizeBuildForm(prepared.normalizedForm, onLog);
   normalizedForm = normalizeLinuxPackageMetadata(normalizedForm, pkg, onLog);
   if (!normalizedForm.electronVersion) {
-    normalizedForm.electronVersion = resolveLocalElectronVersion();
+    normalizedForm.electronVersion = resolveElectronVersionFromManifest(pkg, pkg.build || {});
   }
   const runtime = resolveBuilderRuntime();
   await ensureProjectDependencies(buildProjectDir, runtime, onLog, onStatus);
 
-  const config = injectSelfBuildToolchainResources(buildProjectDir, buildTargetConfig(normalizedForm));
+  const config = injectSelfBuildToolchainResources(buildProjectDir,
+    mergeBuildConfig(pkg.build || {}, buildTargetConfig(normalizedForm)));
 
   if (prepared.htmlOnly) {
     const beforeBuildHookPath = path.join(buildProjectDir, "builder-before-build.cjs");
@@ -3247,6 +3301,13 @@ async function executeBuild(form, onLog, onStatus, session) {
 }
 
 app.whenReady().then(() => {
+  if (!app.requestSingleInstanceLock()) { app.quit(); return; }
+  app.on("second-instance", () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
   cacheMaintenance = cleanupLegacyTempArtifacts().catch(noop).finally(() => { cacheMaintenance = null; });
   createWindow();
 
@@ -3278,7 +3339,7 @@ function sendToWindow(channel, payload) {
   }
 }
 
-ipcMain.handle("dialog:pickProject", async () => {
+registerIpcHandler("dialog:pickProject", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openDirectory"],
     title: "选择要打包的 Electron 项目目录",
@@ -3291,7 +3352,7 @@ ipcMain.handle("dialog:pickProject", async () => {
   return result.filePaths[0];
 });
 
-ipcMain.handle("dialog:pickOutput", async () => {
+registerIpcHandler("dialog:pickOutput", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openDirectory", "createDirectory"],
     title: "选择打包输出目录",
@@ -3304,7 +3365,7 @@ ipcMain.handle("dialog:pickOutput", async () => {
   return result.filePaths[0];
 });
 
-ipcMain.handle("dialog:pickIcon", async (_, extensions) => {
+registerIpcHandler("dialog:pickIcon", async (_, extensions) => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openFile"],
     filters: [
@@ -3326,7 +3387,7 @@ ipcMain.handle("dialog:pickIcon", async (_, extensions) => {
   return result.filePaths[0];
 });
 
-ipcMain.handle("settings:load", async () => {
+registerIpcHandler("settings:load", async () => {
   const saved = await readSettings();
   return {
     ...getDefaultFormSettings(),
@@ -3334,24 +3395,21 @@ ipcMain.handle("settings:load", async () => {
   };
 });
 
-ipcMain.handle("app:getVersion", async () => {
+registerIpcHandler("app:getVersion", async () => {
   return app.getVersion();
 });
 
-ipcMain.handle("runtime:getVersionOptions", async () => {
+registerIpcHandler("runtime:getVersionOptions", async () => {
   return getRuntimeVersionOptions();
 });
 
-ipcMain.handle("settings:save", async (_, settings) => {
-  const current = await readSettings();
-  await writeSettings({
-    ...(current || {}),
-    ...(settings || {}),
-  });
+registerIpcHandler("settings:save", async (_, settings) => {
+  const normalized = normalizeSettingsRecord(settings);
+  await updateSettings((current) => ({ ...current, ...normalized }));
   return { success: true };
 });
 
-ipcMain.handle("settings:export", async (_, settings) => {
+registerIpcHandler("settings:export", async (_, settings) => {
   try {
     const result = await dialog.showSaveDialog(mainWindow, {
       title: "导出 html2exe 配置",
@@ -3375,7 +3433,7 @@ ipcMain.handle("settings:export", async (_, settings) => {
   }
 });
 
-ipcMain.handle("settings:import", async () => {
+registerIpcHandler("settings:import", async () => {
   try {
     const result = await dialog.showOpenDialog(mainWindow, {
       title: "导入 html2exe 配置",
@@ -3400,22 +3458,23 @@ ipcMain.handle("settings:import", async () => {
       success: true,
       filePath,
       settings: parseSettingsExport(content),
+      defaults: getDefaultFormSettings(),
     };
   } catch (error) {
     return { success: false, error: error.message };
   }
 });
 
-ipcMain.handle("settings:reset", async () => {
+registerIpcHandler("settings:reset", async () => {
   try {
-    await fs.rm(getSettingsPath(), { force: true });
+    await updateSettings(() => null);
     return { success: true, settings: getDefaultFormSettings() };
   } catch (error) {
     return { success: false, error: error.message };
   }
 });
 
-ipcMain.handle("project:inspect", async (_, projectDir) => {
+registerIpcHandler("project:inspect", async (_, projectDir) => {
   try {
     const result = await inspectProjectDefaults(projectDir);
     return { success: true, ...result };
@@ -3424,7 +3483,7 @@ ipcMain.handle("project:inspect", async (_, projectDir) => {
   }
 });
 
-ipcMain.handle("builder:cancel", async () => {
+registerIpcHandler("builder:cancel", async () => {
   if (!activeBuild) return { success: false, error: "当前没有正在运行的打包任务。" };
   activeBuild.canceled = true;
   try {
@@ -3435,7 +3494,7 @@ ipcMain.handle("builder:cancel", async () => {
   }
 });
 
-ipcMain.handle("cache:clear", async () => {
+registerIpcHandler("cache:clear", async () => {
   if (activeBuild || cacheMaintenance) {
     return { success: false, error: "构建或缓存清理进行中，请稍后再试。" };
   }
@@ -3451,7 +3510,7 @@ ipcMain.handle("cache:clear", async () => {
   }
 });
 
-ipcMain.handle("builder:run", async (_, form) => {
+registerIpcHandler("builder:run", async (_, form) => {
   if (!mainWindow) {
     throw new Error("窗口未初始化。");
   }
@@ -3472,7 +3531,7 @@ ipcMain.handle("builder:run", async (_, form) => {
     sendToWindow("builder:status", {
       type: "overall",
       state: "failed",
-      text: error.message,
+      text: "构建失败",
     });
     return { success: false, error: error.message };
   }

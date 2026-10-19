@@ -5,12 +5,12 @@
   --muted: #64746a;
   --card: rgba(255, 255, 255, 0.7);
   --stroke: rgba(14, 122, 77, 0.15);
-  --accent: #0f8653;
+  --accent: #0b7547;
   --accent-hover: #0c6a41;
   --accent-2: #da6022;
   --danger: #c4381b;
   --danger-hover: #9c2d15;
-  --warning: #db8b12;
+  --warning: #985b08;
   --radius: 16px;
   --border-color: rgba(43, 79, 63, 0.18);
   --bg-hover: rgba(255, 255, 255, 0.5);
@@ -327,7 +327,7 @@ html, body {
 
 input, select, textarea, button { font: inherit; }
 
-input[type="text"], select, textarea, input[list] {
+input[type="text"], input[type="email"], input[type="url"], select, textarea, input[list] {
   width: 100%;
   border: 1.5px solid var(--border-color);
   background: rgba(255, 255, 255, 0.8);
@@ -368,7 +368,7 @@ input[list]::-webkit-calendar-picker-indicator {
 textarea { resize: vertical; min-height: 120px; line-height: 1.5; }
 
 /* 统一控制 hover 及 focus 变色，且不会覆盖掉 select 和 list 的 background-image */
-input[type="text"]:hover, select:hover, input[list]:hover, textarea:hover {
+input[type="text"]:hover, input[type="email"]:hover, input[type="url"]:hover, select:hover, input[list]:hover, textarea:hover {
   border-color: rgba(14, 122, 77, 0.4);
   background-color: #ffffff;
 }

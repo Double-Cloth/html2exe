@@ -134,6 +134,7 @@ function loadRendererContext() {
     },
   };
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(repoRoot, "src", "config.js"), "utf-8"), context);
   vm.runInContext(fs.readFileSync(path.join(repoRoot, "src", "renderer.js"), "utf-8"), context);
   context.__elements = elements;
   return context;
@@ -141,6 +142,7 @@ function loadRendererContext() {
 
 function loadMainContext() {
   const handlers = new Map();
+  const webContents = { mainFrame: { url: require("node:url").pathToFileURL(path.join(repoRoot, "src", "index.html")).href } };
   const dialog = {};
   const context = {
     console,
@@ -166,15 +168,17 @@ function loadMainContext() {
           BrowserWindow: function BrowserWindow() {},
           dialog,
           ipcMain: {
-            handle: (name, handler) => handlers.set(name, handler),
+            handle: (name, handler) => handlers.set(name, (_event, ...args) => handler({ sender: webContents, senderFrame: webContents.mainFrame }, ...args)),
           },
         };
       }
-      return require(request);
+      return require(request.startsWith(".") ? path.join(repoRoot, request) : request);
     },
   };
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(repoRoot, "main.js"), "utf-8"), context);
+  context.__webContents = webContents;
+  vm.runInContext("mainWindow = { webContents: __webContents }", context);
   context.__handlers = handlers;
   context.__dialog = dialog;
   return context;
