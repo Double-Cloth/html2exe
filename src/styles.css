@@ -39,6 +39,9 @@
   --space-xl: 32px;
   --space-xxl: 48px;
   --sidebar-width: 232px;
+  --motion-fast: 140ms;
+  --motion-normal: 220ms;
+  --motion-ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 * { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--surface-cream-strong) transparent; }
@@ -58,6 +61,9 @@ body { background: var(--canvas); color: var(--body); font-family: var(--font-bo
 .nav-menu { display: flex; flex-direction: column; gap: var(--space-xxs); padding: 0 var(--space-sm) var(--space-md); }
 .nav-item { display: flex; align-items: center; justify-content: flex-start; gap: var(--space-sm); width: 100%; min-height: 44px; padding: 10px var(--space-md); background: transparent; border: 1px solid transparent; color: var(--muted); text-align: left; font-weight: 400; }
 .nav-item.active { background: var(--surface-card); color: var(--ink); font-weight: 500; }
+.nav-menu.has-motion-indicator { position: relative; isolation: isolate; }
+.has-motion-indicator .nav-item.active { background: transparent; }
+.nav-indicator { position: absolute; z-index: -1; pointer-events: none; background: var(--surface-card); border-radius: var(--radius-md); transform-origin: top left; }
 .sidebar-actions { display: flex; flex-direction: column; gap: var(--space-xs); margin-top: auto; padding: var(--space-lg) var(--space-sm) var(--space-md); border-top: 1px solid var(--hairline); }
 .sidebar-actions button { justify-content: flex-start; width: 100%; background: transparent; border-color: transparent; padding-inline: var(--space-md); font-weight: 400; }
 .sidebar-actions .danger { color: var(--error); }
@@ -133,6 +139,13 @@ input[type="checkbox"]:disabled::after { border-color: var(--muted); }
 .combobox-toggle:disabled { background: transparent; }
 .custom-options { position: fixed; inset: auto; z-index: 10; margin: 0; padding: var(--space-xxs); max-height: 280px; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--hairline); border-radius: var(--radius-md); background: var(--canvas); color: var(--ink); box-shadow: 0 4px 12px rgb(20 20 19 / 8%); }
 .custom-options::backdrop { background: transparent; }
+.custom-options { opacity: 0; transform: translateY(-4px) scaleY(0.98); transform-origin: top center; pointer-events: none; transition: opacity 120ms ease-out, transform 120ms var(--motion-ease), display 120ms allow-discrete, overlay 120ms allow-discrete; }
+.custom-options[data-placement="above"] { transform: translateY(4px) scaleY(0.98); transform-origin: bottom center; }
+.custom-options:popover-open { opacity: 1; transform: none; pointer-events: auto; transition-duration: 180ms; }
+@starting-style {
+  .custom-options:popover-open { opacity: 0; transform: translateY(-4px) scaleY(0.98); }
+  .custom-options[data-placement="above"]:popover-open { transform: translateY(4px) scaleY(0.98); }
+}
 .custom-option { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); min-height: 40px; padding: 10px var(--space-sm); border-radius: var(--radius-sm); cursor: pointer; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
 .custom-option.is-active { background: var(--surface-card); }
 .custom-option[aria-disabled="true"] { color: var(--muted); cursor: not-allowed; }
@@ -175,6 +188,30 @@ input[type="checkbox"]:disabled::after { border-color: var(--muted); }
 .action-feedback.error::before { background: var(--error); }
 button.is-busy::after { content: ""; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* 动效只解释操作与状态，不为静态内容增加等待。 */
+button, input, textarea, .checks > label, .four-col > label, .checkbox-row, .custom-option, .overall-status, .step-item .dot {
+  transition: background-color var(--motion-fast) ease-out, border-color var(--motion-fast) ease-out, color var(--motion-fast) ease-out;
+}
+button { transition: background-color var(--motion-fast) ease-out, border-color var(--motion-fast) ease-out, color var(--motion-fast) ease-out, transform var(--motion-fast) var(--motion-ease); }
+button:active:not(:disabled):not(.nav-item):not(.select-control):not(.combobox-toggle) { transform: translateY(1px) scale(0.985); }
+.control-arrow { transition: transform var(--motion-normal) var(--motion-ease), color var(--motion-fast) ease-out; }
+input[type="checkbox"]::after { visibility: visible; opacity: 0; clip-path: inset(0 100% 0 0); transition: clip-path var(--motion-normal) var(--motion-ease), opacity 100ms ease-out; }
+input[type="checkbox"]:checked::after, input[type="checkbox"]:indeterminate::after { opacity: 1; clip-path: inset(0); }
+.checkbox-row:has(input:checked), .four-col > label:has(input:checked) { background: var(--surface-card); }
+.step-item:not(:last-child)::before { transition: background-color var(--motion-normal) ease-out; }
+.step-item.done::before { background: var(--body-strong); }
+.step-item.running .dot::after, .overall-status.running::before { animation: status-breathe 1.6s ease-in-out infinite; }
+.step-item.done .dot::after { animation: check-reveal var(--motion-normal) var(--motion-ease); }
+@keyframes status-breathe { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(0.8); } }
+@keyframes check-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
+@media (hover: hover) {
+  button:hover:not(:disabled):not(.primary):not(.nav-item.active) { background-color: var(--surface-card); }
+  .primary:hover:not(:disabled) { background-color: var(--primary-active); border-color: var(--primary-active); }
+  .log-head button:hover:not(:disabled) { background-color: var(--body); }
+  .checkbox-row:hover { background-color: var(--surface-card); }
+}
+html[data-page-hidden="true"] *, html[data-page-hidden="true"] *::before, html[data-page-hidden="true"] *::after { animation-play-state: paused !important; }
 
 /* 输出页以流程列表和真实终端内容构成工作区。 */
 .output-page .page-heading { margin-bottom: var(--space-lg); }
@@ -272,5 +309,11 @@ button.is-busy::after { content: ""; width: 14px; height: 14px; border: 2px soli
   #logOutput { flex: none; height: 380px; max-height: none; min-height: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
-  button.is-busy::after { animation: none; }
+  :root { --motion-fast: 100ms; }
+  button:active:not(:disabled) { transform: none !important; }
+  .control-arrow { transition: color var(--motion-fast) ease-out; }
+  input[type="checkbox"]::after { clip-path: none; transition: opacity var(--motion-fast) ease-out; }
+  .custom-options, .custom-options[data-placement], .custom-options:popover-open { transform: none; transition: opacity 100ms ease-out, display 100ms allow-discrete, overlay 100ms allow-discrete; }
+  @starting-style { .custom-options:popover-open, .custom-options[data-placement]:popover-open { transform: none; } }
+  button.is-busy::after, .step-item.running .dot::after, .overall-status.running::before, .step-item.done .dot::after { animation: none; }
 }

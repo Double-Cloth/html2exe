@@ -149,6 +149,7 @@
       const below = window.innerHeight - rect.bottom - 8;
       const above = rect.top - 8;
       const upward = below < 240 && above > below;
+      list.dataset.placement = upward ? "above" : "below";
       list.style.width = `${Math.min(rect.width, window.innerWidth - 16)}px`;
       list.style.maxHeight = `${Math.max(0, Math.min(280, upward ? above - 4 : below - 4))}px`;
       list.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - list.offsetWidth - 8))}px`;

@@ -251,6 +251,33 @@ const stepDefaults = {
   complete: "等待开始",
 };
 
+const motionPreference = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+const interfaceAnimations = new Map();
+
+function animateInterface(element, keyframes, duration = 220) {
+  if (!element?.animate) return;
+  interfaceAnimations.get(element)?.cancel();
+  interfaceAnimations.delete(element);
+  if (motionPreference?.matches || document.hidden) return;
+  const animation = element.animate(keyframes, {
+    duration,
+    easing: "cubic-bezier(0.16, 1, 0.3, 1)",
+  });
+  interfaceAnimations.set(element, animation);
+  const release = () => {
+    if (interfaceAnimations.get(element) === animation) interfaceAnimations.delete(element);
+  };
+  animation.onfinish = release;
+  animation.oncancel = release;
+}
+
+function cancelInterfaceAnimations() {
+  interfaceAnimations.forEach((animation) => animation.cancel());
+  interfaceAnimations.clear();
+}
+
+motionPreference?.addEventListener("change", cancelInterfaceAnimations);
+
 function setActionFeedback(text, level = "pending", autoClearMs = 0) {
   if (!dom.actionFeedback) {
     return;
@@ -265,7 +292,9 @@ function setActionFeedback(text, level = "pending", autoClearMs = 0) {
   if (["pending", "success", "error"].includes(level)) {
     dom.actionFeedback.classList.add(level);
   }
+  const changed = dom.actionFeedback.textContent !== text;
   dom.actionFeedback.textContent = text;
+  if (changed) animateInterface(dom.actionFeedback, [{ opacity: 0.4 }, { opacity: 1 }], 180);
 
   // 错误信息保留到下一次操作，避免用户尚未看清就被自动清除。
   if (autoClearMs > 0 && level !== "error") {
@@ -330,8 +359,10 @@ function setOverallStatus(state, text) {
   if (!dom.overallStatus) {
     return;
   }
+  const changed = dom.overallStatus.className !== `overall-status ${state}`;
   dom.overallStatus.className = `overall-status ${state}`;
   dom.overallStatus.textContent = text;
+  if (changed) animateInterface(dom.overallStatus, [{ opacity: 0.4 }, { opacity: 1 }], 180);
 }
 
 function resetProgressView() {
@@ -1231,6 +1262,36 @@ function initTabs() {
   const pageTitle = document.getElementById("pageTitle");
   const pageDescription = document.getElementById("pageDescription");
   const workspaceScroll = document.getElementById("workspaceScroll");
+  const navMenu = navItems[0]?.parentElement;
+  let selectedTab = null;
+  let indicator;
+  if (navMenu) {
+    indicator = document.createElement("span");
+    indicator.className = "nav-indicator";
+    indicator.setAttribute("aria-hidden", "true");
+    navMenu.prepend(indicator);
+    navMenu.classList.add("has-motion-indicator");
+  }
+
+  function moveIndicator(button, animate = false) {
+    if (!indicator) return;
+    // 使用上一次动画当前画面的位置，快速连续切换时仍能自然衔接。
+    const previous = indicator.getBoundingClientRect();
+    const target = button.getBoundingClientRect();
+    const menu = navMenu.getBoundingClientRect();
+    indicator.style.left = `${target.left - menu.left}px`;
+    indicator.style.top = `${target.top - menu.top}px`;
+    indicator.style.width = `${target.width}px`;
+    indicator.style.height = `${target.height}px`;
+    if (animate && previous.width && previous.height) {
+      animateInterface(indicator, [
+        { transform: `translate(${previous.left - target.left}px, ${previous.top - target.top}px) scale(${previous.width / target.width}, ${previous.height / target.height})` },
+        { transform: "none" },
+      ], 280);
+    } else {
+      interfaceAnimations.get(indicator)?.cancel();
+    }
+  }
   const descriptions = {
     basic: "选择项目目录，填写应用信息。",
     build: "选择构建预设，配置运行时与目标平台。",
@@ -1241,6 +1302,8 @@ function initTabs() {
   };
 
   function activateTab(button) {
+    if (selectedTab === button) return;
+    const previousIndex = navItems.indexOf(selectedTab);
     navItems.forEach((item) => {
       const active = item === button;
       const panel = document.getElementById(`tab-${item.dataset.tab}`);
@@ -1255,6 +1318,18 @@ function initTabs() {
     if (pageTitle) pageTitle.textContent = button.textContent.trim();
     if (pageDescription) pageDescription.textContent = descriptions[button.dataset.tab] || "";
     if (workspaceScroll) workspaceScroll.scrollTop = 0;
+    moveIndicator(button, Boolean(selectedTab));
+    if (selectedTab) {
+      const direction = navItems.indexOf(button) > previousIndex ? 1 : -1;
+      animateInterface(document.getElementById(`tab-${button.dataset.tab}`), [
+        { opacity: 0.6, transform: `translateY(${direction * 8}px)` },
+        { opacity: 1, transform: "none" },
+      ]);
+      animateInterface(pageTitle?.parentElement, [{ opacity: 0.5 }, { opacity: 1 }], 180);
+      const previousPanel = document.getElementById(`tab-${selectedTab.dataset.tab}`);
+      interfaceAnimations.get(previousPanel)?.cancel();
+    }
+    selectedTab = button;
   }
 
   navItems.forEach((button, index) => {
@@ -1281,9 +1356,16 @@ function initTabs() {
     });
   });
   if (navItems.length > 0) activateTab(navItems[0]);
+  if (navMenu && window.ResizeObserver) {
+    new ResizeObserver(() => { if (selectedTab) moveIndicator(selectedTab); }).observe(navMenu);
+  }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener("visibilitychange", () => {
+    document.documentElement.dataset.pageHidden = String(document.hidden);
+    if (document.hidden) cancelInterfaceAnimations();
+  });
   if (document.querySelector('.nav-item[data-tab]')) {
     initTabs();
   }
