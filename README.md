@@ -46,6 +46,7 @@ npm run build
 完整配置说明、纯 HTML 自动补全、工具链缓存、构建链路和常见问题见：
 
 - [doc/guide.md](doc/guide.md)
+- [项目检查与验证记录](doc/audit.md)
 
 ## 许可证
 

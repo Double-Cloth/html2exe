@@ -27,7 +27,7 @@
 - 构建过程支持实时日志、步骤状态、整体状态与取消操作。
 - 配置可持久化保存，支持 JSON 导入导出、恢复默认值，并在重启后自动恢复。
 - 纯 HTML 目录可自动补全为临时 Electron 工程。
-- Windows 绿色版 `portable` 输出为单个自解压 EXE，默认解压到 EXE 当前目录下的同名子文件夹，并在程序退出后保留该文件夹。
+- Windows 绿色版 `portable` 输出为单个自解压 EXE，默认解压到 EXE 当前目录下的同名子文件夹，解压后保留该文件夹，需要手动运行文件夹内的应用。
 - 内置并缓存 electron-builder 与 npm，降低目标机器上的环境依赖。
 - 独立输出页用于集中查看打包过程和结果。
 
@@ -100,9 +100,9 @@ npm test
 npm run build
 ```
 
-构建命令会先执行 `prebuild`，由 `scripts/pack-toolchain.js` 生成或刷新 `vendor/toolchain`，再通过 `scripts/build-self.js` 调用 `electron-builder`。在 Windows 上默认产出 `portable` 绿色自解压 EXE，双击后解压到 EXE 当前目录下的 `html2exe` 子文件夹，并在程序退出后保留该文件夹。
+构建命令会先执行 `prebuild`，由 `scripts/pack-toolchain.js` 生成或刷新 `vendor/toolchain`，再通过 `scripts/build-self.js` 调用 `electron-builder`。在 Windows 上默认产出 `portable` 绿色自解压 EXE，双击后解压到 EXE 当前目录下的 `html2exe` 子文件夹，解压后保留该文件夹，需要手动运行文件夹内的应用。
 
-自打包时会先把 electron-builder 的临时输出目录切到系统临时目录下的 `html2exe-self-build/<本次构建>`，构建成功后再把顶层 EXE 发布到 `dist`。这样可以避开编辑器、资源管理器或工作区索引器对项目目录内大量解压文件的持续扫描。`scripts/electron-builder-runner.js` 还会在 electron-builder 进程内为 Windows 下容易被安全软件或索引器短暂占用的 `rename` 操作增加重试，降低 `win-unpacked.tmp` 重命名失败的概率。
+自打包时会先把 electron-builder 的临时输出目录切到系统临时目录下的 `html2exe-self-build/<本次构建>`，构建成功后再把顶层产物及更新辅助文件发布到 `dist`。目录模式、显式输出目录和混合平台构建保留 electron-builder 原生输出方式；发布失败时保留临时产物，日志会给出恢复位置。这样可以避开编辑器、资源管理器或工作区索引器对项目目录内大量解压文件的持续扫描。`scripts/electron-builder-runner.js` 还会在 electron-builder 进程内为 Windows 下容易被安全软件或索引器短暂占用的 `rename` 操作增加重试，降低 `win-unpacked.tmp` 重命名失败的概率。
 
 ## 典型使用流程
 
@@ -179,7 +179,8 @@ npm run build
 - 产物仍然是一个自解压 EXE。
 - 双击运行时，默认在该 EXE 所在目录创建同名子文件夹。
 - 应用内容解压到该子文件夹中，而不是系统临时目录。
-- 程序退出后不删除解压目录，后续再次运行会复用并刷新该目录。
+- 解压完成后显示提示，不自动启动应用；请手动运行解压目录内的主程序。
+- 后续再次运行自解压 EXE 会重新解压并刷新该目录。请先关闭其中正在运行的应用，不要把个人文件保存在解压目录中。
 - 子文件夹名称来源于 `executableName`，为空时回退到 `productName` 或 `appId`，并会自动替换 Windows 文件名中的非法字符。
 
 这样处理更符合“绿色软件”的直觉：用户可以把 EXE 放到任意目录运行，解压后的程序文件也留在同一位置，便于检查、备份或手动删除。
@@ -239,19 +240,21 @@ macOS 目标更偏向镜像式发布和归档分发。
 
 `scripts/pack-toolchain.js` 会在 `vendor/toolchain` 中准备构建依赖，当前包括：
 
-- `electron-builder@26.8.1`
-- `npm`
+- `electron-builder@26.15.3`
+- `npm@11.21.1`
+- `rcedit@4.0.1`
 
-随后，`scripts/afterPack.js` 会把 `vendor/toolchain/node_modules` 复制到应用资源目录中，以便运行时查找和恢复。
+工具链清单和锁文件位于 `scripts/toolchain/`；首次准备或锁文件变化时执行 `npm ci`，完整且匹配的工具链会直接复用。`extraResources` 负责复制到应用资源目录，`scripts/afterPack.js` 验证必需文件，避免重复复制。
 
 ### 运行阶段的查找顺序
 
 主进程会按优先级寻找可用的 `electron-builder` 入口：
 
 1. 内置或本地可直接访问的 `electron-builder` CLI。
-2. 本地缓存的工具链目录。
-3. `npx --no-install electron-builder`。
-4. `npm exec electron-builder`。
+2. 本地缓存的完整工具链。
+3. 通过内置或系统 npm-cli 安装固定版本到缓存，再使用缓存 CLI。
+
+所有 CLI 都直接通过 Node/Electron 运行，不经过 shell；Windows 无需把 `npm.cmd` 当成原生可执行文件启动。
 
 如果系统没有可用的 `Node.js` 或 `npm`，程序会尽量回退到 Electron 自带运行时，并通过 `ELECTRON_RUN_AS_NODE=1` 执行 CLI。
 
@@ -288,9 +291,9 @@ Windows 示例：`C:/Users/<用户名>/AppData/Roaming/html2exe/.cache`
 
 ### 清理策略
 
-- 启动时会尝试清理历史临时目录，例如 `electron-html-pack-*`、`electron-builder-ui-*`
+- 启动时仅扫描本应用 `builder/temp` 内的历史临时目录，例如 `electron-html-pack-*`、`electron-builder-ui-*`，不扫描系统临时目录
 - Windows 下遇到 `EBUSY` 或 `EPERM` 时会尝试重试
-- 如果仍被占用，程序会返回“部分清理”，并列出被跳过的项
+- 如果仍被占用，程序会返回“部分清理”，并列出被跳过的项；不会为了清理缓存而终止其它程序
 
 ## 构建执行链路
 
@@ -299,9 +302,9 @@ Windows 示例：`C:/Users/<用户名>/AppData/Roaming/html2exe/.cache`
 3. 纯 HTML 项目会先进入自动补全流程，生成临时工程结构。
 4. 主进程生成临时 electron-builder 配置。
 5. 系统解析可用的构建入口，优先使用内置和缓存工具链。
-6. 如果包含 Windows `portable` 目标，构建前会临时 patch `electron-builder` 的 portable NSIS 模板，让绿色版解压到 EXE 当前目录并保留文件。
+6. 如果包含 Windows `portable` 目标，构建前校验模板兼容性，在构建子进程读取模板时替换内容，让自解压 EXE 在当前目录解压并保留文件。
 7. 启动子进程执行构建，并把日志流式回传到界面。
-8. 构建完成后返回成功、失败或取消状态，并执行必要清理；portable 模板会在构建结束后恢复。
+8. 构建完成后返回成功、失败或取消状态，并统一清理临时配置与工程；共享的 portable 模板文件从始至终不会被改写。
 
 `npm run build` 自打包也会使用同一类 portable 模板 patch，只是入口在 `scripts/build-self.js`。这保证命令行默认构建和应用内构建的绿色版行为一致。
 
@@ -323,7 +326,7 @@ npm run prebuild
 
 ### Windows 绿色版没有生成当前目录解压行为
 
-请确认 Windows 目标中包含 `portable`，或者启用了 `winPortable`。该能力依赖本地或缓存工具链中的 `electron-builder` CLI，并需要能定位到 `app-builder-lib/templates/nsis/portable.nsi`。如果只能回退到系统 `npx` / `npm exec` 且无法定位模板，程序会中止构建并给出错误，而不会静默生成行为不符合预期的绿色版。
+请确认 Windows 目标中包含 `portable`，或者启用了 `winPortable`。该能力依赖本地或缓存工具链中的 `electron-builder` CLI，并需要能定位到 `app-builder-lib/templates/nsis/portable.nsi`。如果本地与缓存工具链均无法定位模板，程序会中止构建并给出错误。
 
 ## 开发与维护
 
@@ -336,6 +339,16 @@ npm run prebuild
 - 本工具只负责本机参数组装和命令调度，不托管签名证书。
 - 打包命令会在本机执行，请确认目标项目和依赖来源可信。
 - 正式分发前，请补齐签名、公证、许可证和合规流程。
+
+## 配置和构建边界
+
+- 渲染层与主进程共用 `src/config.js` 校验。Chromium 使用四段版本号；应用版本、Electron 和 Node.js 使用 SemVer。
+- 配置通过队列串行写入，并先写临时文件再原子替换；导入保留下拉框未预置的配置值。
+- 构建从准备阶段起占用任务锁；准备、依赖安装和打包阶段均可取消。取消只终止本次任务拥有的子进程树。
+- 输出目录不能是源码目录本身或其祖先；目录链接也会按真实路径核对。
+- 纯 HTML 模式下，文件与附加资源的相对路径以原始项目为基准；保留用户排除规则，默认忽略 `.cache` 等生成目录。
+- `asar` 选项按用户设置生效；现有 Electron 项目未被界面覆盖的 `package.json.build` 钩子和配置会继续保留。
+- 本工具只允许受信任的本地配置页和输出页调用 IPC，并阻止外部页面导航和新窗口。
 
 ## 许可证
 
